@@ -1,0 +1,23 @@
+{
+  "name": "skills",
+  "owner": {
+    "name": "Daniel Demmel",
+    "url": "https://www.danieldemmel.me"
+  },
+  "metadata": {
+    "description": "Skills for Agents from daaain",
+    "version": "1.0.0",
+    "repository": "https://github.com/daaain/skills"
+  },
+  "plugins": [
+    {
+      "name": "skills",
+      "description": "Skills I couldn't find elsewhere",
+      "source": "./",
+      "strict": false,
+      "skills": [
+        "./skills/devcontainer-security"
+      ]
+    }
+  ]
+}
