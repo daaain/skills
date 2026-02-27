@@ -2,7 +2,7 @@
 name: devcontainer-security
 description: Guide for setting up secured VS Code dev containers for coding agents. Use when creating or hardening a DevContainer to sandbox Claude Code or other coding agents, configuring Docker socket proxies, handling VS Code IPC escape vectors, setting up git worktree support, or verifying security controls. Covers threat model, three-layer defence architecture, Node.js/pnpm setup, and verification testing.
 metadata:
-  version: 1.1.0
+  version: 1.1.1
 ---
 
 # Secured VS Code Dev Containers for Coding Agents

@@ -60,7 +60,7 @@ UP_OUTPUT=$(npx -y @devcontainers/cli up --workspace-folder "$WORKSPACE" 2>&1) |
   exit 1
 }
 
-CONTAINER_ID=$(echo "$UP_OUTPUT" | grep -oP '"containerId"\s*:\s*"\K[^"]+' | head -1)
+CONTAINER_ID=$(echo "$UP_OUTPUT" | sed -n 's/.*"containerId"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
 if [ -z "$CONTAINER_ID" ]; then
   echo "Bail out! Could not extract container ID from devcontainer up output"
   echo "$UP_OUTPUT"
@@ -92,14 +92,14 @@ echo "TAP version 13"
 echo "1..11"
 
 # 1. Hardening script exists
-if devcontainer_exec test -f ~/.config/security-harden.sh; then
+if devcontainer_exec bash -c 'test -f ~/.config/security-harden.sh'; then
   tap_pass "hardening script exists at ~/.config/security-harden.sh"
 else
   tap_fail "hardening script missing at ~/.config/security-harden.sh"
 fi
 
 # 2. .bashrc sources hardening on line 1
-BASHRC_LINE1=$(devcontainer_exec head -1 ~/.bashrc 2>/dev/null || echo "")
+BASHRC_LINE1=$(devcontainer_exec bash -c 'head -1 ~/.bashrc' 2>/dev/null || echo "")
 if echo "$BASHRC_LINE1" | grep -q 'security-harden.sh'; then
   tap_pass ".bashrc sources hardening script on line 1"
 else
@@ -155,7 +155,7 @@ fi
 
 # 8. No new privileges
 NO_NEW_PRIVS=$(devcontainer_exec grep NoNewPrivs /proc/self/status 2>/dev/null || echo "unknown")
-if echo "$NO_NEW_PRIVS" | grep -qP '\b1$'; then
+if echo "$NO_NEW_PRIVS" | grep -qE '[[:space:]]1$'; then
   tap_pass "no-new-privileges enforced"
 else
   tap_fail "no-new-privileges not enforced ($NO_NEW_PRIVS)"
