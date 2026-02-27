@@ -17,6 +17,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           persist-credentials: true
+          fetch-depth: 0
 
       - name: Sync skills
         run: node .github/scripts/sync-skills.js

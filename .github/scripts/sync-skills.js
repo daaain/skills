@@ -8,6 +8,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { execSync } = require("child_process");
 
 const SKILLS_DIR = "skills";
 const MARKETPLACE_FILE = ".claude-plugin/marketplace.json";
@@ -181,6 +182,95 @@ function updateMarketplace(skills) {
 }
 
 /**
+ * Parse previously recorded versions from existing VERSIONS.md
+ */
+function getPreviousVersions() {
+  if (!fs.existsSync(VERSIONS_FILE)) return {};
+
+  const content = fs.readFileSync(VERSIONS_FILE, "utf8");
+  const versions = {};
+  const rowRegex = /^\| (.+?) \| (.+?) \| .+? \|$/gm;
+  let match;
+
+  while ((match = rowRegex.exec(content))) {
+    const name = match[1].trim();
+    const version = match[2].trim();
+    if (name !== "Skill" && name !== "-------") {
+      versions[name] = version;
+    }
+  }
+
+  return versions;
+}
+
+/**
+ * Get the commit hash where VERSIONS.md was last modified
+ */
+function getLastVersionsSyncCommit() {
+  try {
+    return execSync('git log -1 --format="%H" -- VERSIONS.md', {
+      encoding: "utf8",
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Get commit messages for a skill directory since a given commit,
+ * filtering out automated sync commits
+ */
+function getSkillCommits(skillDir, sinceCommit) {
+  try {
+    const range = sinceCommit ? `${sinceCommit}..HEAD` : "HEAD";
+    const cmd = `git log --oneline --format="%s" ${range} -- skills/${skillDir}/`;
+    const output = execSync(cmd, { encoding: "utf8" }).trim();
+    if (!output) return [];
+    return output
+      .split("\n")
+      .filter((msg) => !msg.startsWith("chore: sync skills"));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Build changelog entries for skills that have version bumps
+ */
+function buildChangelogEntries(skills, today) {
+  const previousVersions = getPreviousVersions();
+  const sinceCommit = getLastVersionsSyncCommit();
+  const entries = [];
+
+  for (const skill of skills) {
+    const prevVersion = previousVersions[skill.name];
+
+    if (!prevVersion) {
+      // New skill — note its addition
+      entries.push(`- **${skill.name}** (${skill.version}): initial release`);
+      continue;
+    }
+
+    if (prevVersion === skill.version) continue;
+
+    // Version bumped — collect commits
+    const commits = getSkillCommits(skill.dir, sinceCommit);
+
+    if (commits.length > 0) {
+      for (const msg of commits) {
+        entries.push(`- **${skill.name}** (${skill.version}): ${msg}`);
+      }
+    } else {
+      entries.push(
+        `- **${skill.name}**: ${prevVersion} → ${skill.version}`
+      );
+    }
+  }
+
+  return entries;
+}
+
+/**
  * Update VERSIONS.md with current skill versions
  */
 function updateVersions(skills) {
@@ -195,17 +285,28 @@ Current versions of all skills. Agents can compare against local versions to che
 
   const rows = skills.map((skill) => `| ${skill.name} | ${skill.version} | ${today} |`);
 
-  // Preserve existing recent changes section if it exists
-  let recentChanges = "";
+  // Build changelog: preserve existing entries and prepend new ones for version bumps
+  let existingChangelog = "";
   if (fs.existsSync(VERSIONS_FILE)) {
     const existing = fs.readFileSync(VERSIONS_FILE, "utf8");
-    const changesMatch = existing.match(/\n(## Recent Changes[\s\S]*)$/);
+    const changesMatch = existing.match(/\n## Recent Changes\n([\s\S]*)$/);
     if (changesMatch) {
-      recentChanges = changesMatch[1];
+      existingChangelog = changesMatch[1].trim();
     }
   }
 
-  if (!recentChanges) {
+  const newEntries = buildChangelogEntries(skills, today);
+  let recentChanges;
+
+  if (newEntries.length > 0) {
+    const newSection = `### ${today}\n${newEntries.join("\n")}`;
+    const body = existingChangelog
+      ? `${newSection}\n\n${existingChangelog}`
+      : newSection;
+    recentChanges = `## Recent Changes\n\n${body}`;
+  } else if (existingChangelog) {
+    recentChanges = `## Recent Changes\n\n${existingChangelog}`;
+  } else {
     recentChanges = `## Recent Changes\n\n### ${today}\n- Initial version tracking`;
   }
 
