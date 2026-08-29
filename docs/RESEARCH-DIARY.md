@@ -422,3 +422,112 @@ threshold. Turns are the better unit: one turn firing forty tool calls is one
 decision, not forty. Both gates run before any model call, and when a window
 fails either one the clock advances but the cursor does not, so those lines
 roll into the next window instead of going unobserved.
+
+---
+
+# Round 3 — can the reflector share the session cache?
+
+Good question, and the answer is no — three independent reasons, one of them
+measurable.
+
+## 1. Prompt cache is model-scoped (measured)
+
+Identical prompt, same moment, parent session running Opus 5:
+
+| Reflector model | cache_read | cache_write | cost |
+|---|---|---|---|
+| Sonnet 5 (used by earlier reflections) | 41,513 | 0 | $0.011 |
+| Haiku 4.5 (first use in this container) | 0 | 30,090 | $0.064 |
+
+Warm for one, stone cold for the other. Whatever the reflector shares, it
+shares with *previous reflections on the same model*, never across models —
+so with a Sonnet reflector and an Opus parent the overlap is exactly zero.
+
+## 2. Caching is prefix matching, not a handle you can pass
+
+The cache key is the token prefix, rendered `tools` → `system` → `messages`.
+To hit the parent's conversation cache you would have to **send** that
+conversation as your prefix. There is no "reuse those 33M cached tokens
+without transmitting them" — that API does not exist, and if it did, the
+prefix would still have to match byte for byte.
+
+Which means the thing being asked for is self-defeating: the digest exists
+precisely so the reflector doesn't carry the conversation. Sharing the
+session's cache would require carrying it.
+
+## 3. The prefixes diverge at the first message anyway
+
+What *is* shared is the harness preamble — Claude Code's system prompt and
+tool definitions — between successive reflections on the same model. That's
+the ~34k `cache_read` in the ledger. It was warmed by the previous reflection,
+not by the parent.
+
+Matching `REFLECTION_MODEL` to the parent would let a cold reflector ride the
+parent's harness prefix, saving one cache write per session while making every
+reflection cost Opus rates. Not worth it.
+
+## The second half: is an in-band hook possible?
+
+There are exactly two hook handler types that call a model, and both are worse
+than the subprocess:
+
+| | `type: "prompt"` | `type: "agent"` |
+|---|---|---|
+| Read the transcript | **No** — `$ARGUMENTS` is the hook payload, which has the transcript *path*, not its content, and prompt hooks have no tools | Yes (Read/Grep/Glob) |
+| Write the diary | No | **No** — no Write tool |
+| Run async | **No** | **No** |
+| Share session context/cache | No | No |
+
+`async` / `asyncRewake` are documented only under *command* hook fields. So a
+`prompt` or `agent` hook would **block the session for 15–30s every
+reflection** — disqualifying on its own, before the missing read and write
+access.
+
+So the `claude -p` subprocess isn't a workaround for a capability hooks are
+missing. It is the only shape that runs off the critical path, can read the
+whole transcript, and can write outside the repo. The hooks system gives
+exactly the level of control needed; it just doesn't give an in-band model
+call, and wouldn't help if it did.
+
+## Verified the hook payload by capturing a real one
+
+Rather than trusting the docs, I built a throwaway plugin whose only hook is
+`cat > payload.json`. A real `Stop` payload:
+
+```json
+{"session_id": "...", "transcript_path": "...", "cwd": "...",
+ "prompt_id": "...", "permission_mode": "default",
+ "effort": {"level": "high"}, "hook_event_name": "Stop",
+ "stop_hook_active": false, "last_assistant_message": "...",
+ "background_tasks": [], "session_crons": []}
+```
+
+Two things worth having checked:
+
+- `effort.level` is right there, on both `Stop` and `PostToolUse`. So
+  inheriting the parent's effort is a two-line change, not a guess.
+- `stop_hook_active` is a real **boolean**, not the string `"false"`. My
+  truthiness check was already correct — but my first `jq` view stringified
+  every value and made it *look* like a string bug. Worth noting as a
+  cautionary tale about inspecting with a lossy formatter.
+
+Also present and unused so far: `last_assistant_message`, `background_tasks`,
+`session_crons`. `background_tasks` in particular looks interesting — an agent
+that has spawned long-running background work is exactly the kind of thing a
+window-scale observer should know about.
+
+## Implemented: `REFLECTION_EFFORT=match`
+
+Inherits the observed session's effort level, on the theory that a session
+thinking hard is one worth watching closely. Falls back to the CLI default on
+an absent or unrecognised level rather than guessing.
+
+The catch, measured: **every effort change starts a new cache namespace.**
+Switching a warm Sonnet reflector to `low` turned a call that would have read
+~34k cached tokens into one that wrote 79,369 — $0.355 instead of ~$0.07. So
+`match` is free while the session's effort is stable and costs one cold start
+each time someone touches `/effort`. The level is recorded per ledger row so
+the cost of a switch is visible after the fact.
+
+Pin a fixed level if your sessions ride the effort control; use `match` if they
+don't.

@@ -46,6 +46,64 @@ was thrown away.
 advances the cursor to the end of the file without spending a model call. On a
 resumed session that means history already lived through is not re-reflected.
 
+## Why a subprocess, and not an in-band call
+
+The reflector is a separate `claude -p` process. Two questions follow from
+that: could it reuse the observed session's prompt cache, and is there a hook
+type that would make the call in-band instead?
+
+### It cannot share the session's cache, for three independent reasons
+
+**Cache is model-scoped.** Measured with the identical prompt at the same
+moment, against a parent session running Opus 5:
+
+| Reflector model | cache_read | cache_write |
+|---|---|---|
+| Sonnet 5 (used by earlier reflections) | 41,513 | 0 |
+| Haiku 4.5 (first use in this container) | 0 | 30,090 |
+
+Warm for one model, stone cold for another. A reflector on a different model
+than the parent shares nothing with it by construction.
+
+**Caching is prefix matching, not a handle.** The cache key is the token
+prefix — `tools` → `system` → `messages`. To hit the parent's conversation
+cache you would have to *send* that conversation as your prefix, which is
+precisely the cost the digest exists to avoid. There is no API for "reuse
+those cached tokens without transmitting them".
+
+**The prefixes diverge immediately.** The reflector's messages are a distilled
+window, not the conversation.
+
+What *is* shared is the harness preamble — the Claude Code system prompt and
+tool definitions — between successive reflections on the same model. That is
+the ~34k `cache_read` in the ledger, warmed by the previous reflection rather
+than by the parent.
+
+Matching `REFLECTION_MODEL` to the parent would let the reflector's cold start
+ride the parent's harness prefix, but that saves one cache write per session
+while making every reflection cost Opus rates. Not worth it.
+
+### The in-band hook types are strictly worse
+
+Two hook handler types call a model: `type: "prompt"` and `type: "agent"`.
+Neither works here.
+
+| | `prompt` | `agent` |
+|---|---|---|
+| Can read the transcript | **No** — `$ARGUMENTS` is the hook payload, which carries the transcript *path*, not its content, and prompt hooks have no tools | Yes, it has Read/Grep/Glob |
+| Can write the diary | No | **No** — no Write tool |
+| Can run async | **No** | **No** |
+| Shares session context or cache | No | No |
+
+`async` and `asyncRewake` are documented only under command-hook fields, so a
+`prompt` or `agent` hook would **block the session for 15–30 seconds on every
+reflection**. That alone disqualifies them, before the missing read and write
+access.
+
+So the subprocess is not a workaround for a missing capability. It is the only
+shape that runs off the critical path, can read the whole transcript, and can
+write somewhere outside the repo.
+
 ## Recursion
 
 The hook spawns `claude -p`. **That child session loads the project's hooks by

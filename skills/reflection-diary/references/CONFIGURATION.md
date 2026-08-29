@@ -38,7 +38,7 @@ from your shell profile.
 |---|---|---|
 | `REFLECTION_MODEL` | `claude-sonnet-5` | A weaker model gives a weaker judge; this is the main quality lever. |
 | `REFLECTION_TIMEOUT` | `150` | Seconds before the reflector is killed. Observed runs take 15–30s. |
-| `REFLECTION_EFFORT` | *(unset)* | `low`…`max`. `low` cuts thinking tokens in the output, the second-largest cost line. Changing it invalidates the reflector's prompt cache, so pick one and stay on it. |
+| `REFLECTION_EFFORT` | *(unset)* | `low`…`max`, or `match` to inherit the observed session's own effort level from the hook payload. `low` cuts thinking tokens, the second-largest cost line. See the caveat below. |
 | `REFLECTION_BARE` | `0` | Use `--bare`. Faster start, but **requires `ANTHROPIC_API_KEY`** — bare mode reads neither OAuth credentials nor the keychain. |
 | `REFLECTION_INCLUDE_THINKING` | `1` | Include thinking text when present. Currently a no-op: Claude Code does not persist it. |
 
@@ -162,6 +162,29 @@ keychain, so on a subscription it fails with an authentication error.
 `--system-prompt` combined with `--exclude-dynamic-system-prompt-sections`
 trims about 12% (41.5k → 36.5k tokens). Since the harness is the cheap part,
 this is rarely worth the loss of the default system prompt.
+
+### Inheriting the parent's effort
+
+The hook payload carries the observed session's effort level:
+
+```json
+{"hook_event_name": "Stop", "effort": {"level": "high"}, ...}
+```
+
+`REFLECTION_EFFORT=match` passes it through, on the theory that a session
+thinking hard is one worth watching closely. An unrecognised or absent level
+falls back to the CLI default rather than guessing.
+
+The catch is that **every effort change starts a new cache namespace.** A
+measured example: switching a warm Sonnet 5 reflector from its default to
+`low` turned a call that would have read ~34k cached tokens into one that
+wrote 79,369 — $0.355 instead of ~$0.07. So `match` costs one cold start each
+time the observed session changes effort (`/effort`, or a mode switch). If the
+session's effort is stable, `match` is free; if someone rides the effort
+control, pin a fixed level instead.
+
+The chosen level is recorded per row in the usage ledger, so the cost of a
+switch is visible after the fact.
 
 ### Verifying the cache is working
 

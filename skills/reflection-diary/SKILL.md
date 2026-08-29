@@ -3,7 +3,7 @@ name: reflection-diary
 description: Set up, tune, or read a periodic out-of-band reflection diary for a coding agent session. A Claude Code hook reads the session transcript every few minutes and writes a terse diary entry plus a judgement on the trajectory — on track, drifting, unsafe, or blocked — to a file outside the repo, and can alert the operator or interrupt the agent. Use when asked to monitor, observe, audit or babysit an agent's trajectory, to keep a session journal or eval log, to detect scope creep, goal substitution or unsafe actions, or to install, configure or debug the reflection-diary plugin and its hooks.
 license: MIT
 metadata:
-  version: 1.1.0
+  version: 1.2.0
   author: Daniel Demmel
 ---
 
@@ -72,6 +72,14 @@ tool runs ──► PostToolUse ─►      │
                                               notification    the main agent
 ```
 
+The reflector is a separate `claude -p` process rather than an in-band call.
+It cannot share the observed session's prompt cache — caching is model-scoped
+prefix matching, so hitting that cache would mean re-sending the conversation
+the digest exists to replace — and the two hook types that do call a model
+(`prompt` and `agent`) cannot run asynchronously, so either would block the
+session for 15–30 seconds per reflection. See
+[references/DESIGN.md](references/DESIGN.md#why-a-subprocess-and-not-an-in-band-call).
+
 **There is no timer hook in Claude Code.** Every one of its ~31 hook events is
 event-driven. The interval is synthesised: the hook fires on `Stop` and
 `PostToolUse`, and the script exits in milliseconds unless the configured
@@ -113,6 +121,7 @@ Everything is environment variables, so it can be set per-project in
 | `REFLECTION_ALERT_CMD` | *(unset)* | Shell command for `concern`+ alerts. Gets `REFLECTION_SEVERITY`, `_SUMMARY`, `_KINDS`, `_SESSION`, `_PROJECT`, `_DIARY`. |
 | `REFLECTION_MIN_LINES` | `4` | Skip the model call if the window is thinner than this. |
 | `REFLECTION_MIN_TURNS` | `2` | Skip the model call if fewer agent turns than this have elapsed. |
+| `REFLECTION_EFFORT` | *(unset)* | `low`…`max`, or `match` to inherit the observed session's effort level. |
 | `REFLECTION_DISABLED` | `0` | Kill switch. |
 | `REFLECTION_DEBUG` | `0` | Log decisions to stderr (visible in `claude --debug`). |
 

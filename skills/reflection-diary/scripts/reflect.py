@@ -70,9 +70,13 @@ MIN_TURNS = env_int("REFLECTION_MIN_TURNS", 2)
 MAX_WINDOW_LINES = env_int("REFLECTION_MAX_WINDOW_LINES", 400)
 
 MODEL = env_str("REFLECTION_MODEL", "claude-sonnet-5")
-# Left unset by default. Note that changing it invalidates the reflector's
-# prompt cache, so pick one and stay on it.
+
+# "" leaves the CLI default. "match" tracks the observed session's own effort
+# level, which arrives in the hook payload — a session thinking hard is one
+# worth watching closely. Note that any change invalidates the reflector's
+# prompt cache, so "match" trades a little cache efficiency for that signal.
 EFFORT = env_str("REFLECTION_EFFORT", "")
+EFFORT_LEVELS = {"low", "medium", "high", "xhigh", "max"}
 DIARY_HOME = Path(
     env_str("REFLECTION_DIARY_HOME", str(Path.home() / ".claude" / "reflection-diary"))
 ).expanduser()
@@ -531,7 +535,15 @@ def build_prompt(meta: dict, asks: list[str], recent: list[str], window: list[st
     return "\n".join(parts)
 
 
-def run_reflector(prompt: str) -> tuple[dict | None, dict]:
+def resolve_effort(event: dict) -> str:
+    """Effort level for this reflection, possibly inherited from the parent."""
+    if EFFORT != "match":
+        return EFFORT if EFFORT in EFFORT_LEVELS else ""
+    level = ((event.get("effort") or {}).get("level") or "").strip()
+    return level if level in EFFORT_LEVELS else ""
+
+
+def run_reflector(prompt: str, effort: str = "") -> tuple[dict | None, dict]:
     """Run the reflector. Returns (verdict, usage).
 
     `usage` is always populated when the call completed, even if the verdict
@@ -551,8 +563,8 @@ def run_reflector(prompt: str) -> tuple[dict | None, dict]:
            "--permission-mode", "dontAsk",
            "--strict-mcp-config"]
 
-    if EFFORT:
-        cmd += ["--effort", EFFORT]
+    if effort:
+        cmd += ["--effort", effort]
 
     if USE_BARE:
         # Faster start and skips hook discovery outright, but bare mode reads
@@ -592,6 +604,7 @@ def run_reflector(prompt: str) -> tuple[dict | None, dict]:
         return None, {}
 
     usage = extract_usage(payload, len(prompt))
+    usage["effort"] = effort or "default"
 
     verdict = payload.get("structured_output")
     if isinstance(verdict, dict):
@@ -923,7 +936,7 @@ def main() -> int:
 
         ensure_header(diary_path, meta, asks)
         prompt = build_prompt(meta, asks, tail_entries(diary_path), window)
-        verdict, usage = run_reflector(prompt)
+        verdict, usage = run_reflector(prompt, resolve_effort(event))
 
         if usage:
             record_usage(ledger_path, {
