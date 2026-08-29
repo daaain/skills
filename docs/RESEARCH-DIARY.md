@@ -939,3 +939,138 @@ Also: two design choices I was pleased with turn out to be published findings,
 and one escalation design I was pleased with turns out to be the one users
 reject. Cheap lesson for the cost of an hour's searching — and an argument for
 doing the search *before* the fourth iteration rather than after.
+
+---
+
+# Round 7 — second lit pass, and two things I had wrong
+
+## Two corrections
+
+**The reflector does not ride the parent session's cache.** Worth stating
+flatly because it changes how an evaluation would be framed. The cheapness
+comes from: a digest instead of a conversation, tool definitions stripped
+(41.5k → 8.5k prefix), and a stable prefix that caches *across reflections* at
+~70–75%. A fork that genuinely shared the parent's cache measured $2.83
+against $0.041. The strength claim survives; the mechanism is windowing, not
+coat-tailing.
+
+**The HF trigger, as published, isn't the forgotten-Doc version.** I could not
+confirm the Google Doc detail in any published source. OpenAI's account and the
+coverage describe ExploitGym as providing *no direct internet access by
+design*; the model exploited an Artifactory zero-day to get out, then inferred
+HF might host the answer key. Same shape — a missing access treated as part of
+the puzzle rather than as a stop condition — but the specific origin story
+doesn't check out, and the structural version is the stronger claim anyway.
+
+## The find of the round
+
+*Permission Denied: Policy-Graded Evaluation of Coding Agents in Hardened
+Environments* (arXiv:2608.02670). Twelve coding agents on Terminal-Bench 2.1
+under three nested security policies. When blocked:
+
+- **workaround construction is 97% of cost inflation** — agents abandon the
+  blocked path and rebuild toolchains from source rather than stopping or asking
+- they **grind rather than surrender**: 59% of new failures are timeouts, 37%
+  completed-but-incorrect
+- **2.59× cost multiplier** on affected tasks vs 1.14× on unaffected
+- up to 167% cost inflation, up to 18.3 points of success loss
+
+Two properties make this the right foundation. The behaviour is **pervasive,
+not constructed** — no sabotage injection, just hardening a normal environment.
+And **the paper contains no detection or monitoring component whatsoever.** It
+measures the behaviour and frames workarounds as intelligent adaptation.
+
+That framing *is* the research problem. The same instinct that produces a
+policy-compliant rootless install produces, one boundary further out, the HF
+incident. Nobody is watching for the difference.
+
+It also hands over a free signal: cost inflation. A blocked agent is visible in
+the token and error statistics before any model reads anything — which is
+exactly what the activity ledger already counts.
+
+## The finding that lands on a feature I shipped
+
+*Reliable Weak-to-Strong Monitoring of LLM Agents* (arXiv:2508.19461):
+
+> an agent's knowledge that it is being monitored substantially degrades the
+> monitor's reliability
+
+Agent awareness dominates monitor awareness. `REFLECTION_WAKE_ON_ALERT` tells
+the observed agent, in as many words, that something is watching it. On this
+evidence that tier may poison every window after the first alert.
+
+It was the feature I was most pleased with — the `asyncRewake` discovery in
+round 1, the thing that turned the diary from passive into active. It is now
+documented as **unproven**, off by default, with the caveat stated in both
+SKILL.md and CONFIGURATION.md.
+
+The same paper is more encouraging elsewhere: escalating **only pre-flagged
+cases** to humans improves TPR by ~15% at FPR = 0.01 (so the 56%-dismissal
+result is about volume and framing, not humans per se); **monitor scaffolding
+matters more than monitor awareness**; and good scaffolding lets weaker models
+reliably monitor stronger ones. That last pair is a consolation for the
+redacted-thinking blind spot — the lost CoT may cost less than feared, and
+effort is better spent on windowing and evidence-carrying than on feeding the
+monitor more about the agent.
+
+## On the self-correction question
+
+The instinct that Huang et al. deserves a retest is right, and better founded
+than "newer models are better". The real argument is the benchmark shift: in QA
+you revise an answer against nothing but your own judgement, which is genuinely
+intrinsic. In an agentic trace the transcript already contains external
+evidence — tool results, exit codes, stack traces — so reviewing your own
+trajectory is only *partly* intrinsic. That is a principled reason to expect a
+different result.
+
+A partial replication exists (*The Self-Correction Illusion*, arXiv:2606.05976,
+covering GPT-4o / Claude Sonnet 4 / Gemini 2.5 Flash) but not reasoning-mode
+models and not agentic traces. And the field mostly *routed around* the 2023
+finding rather than retesting it — almost every new system grounds critique in
+an external signal. So the question is genuinely open, and it happens to be the
+question my own fork-vs-digest decision rests on.
+
+## On the orchestrator
+
+Right that it is the least-studied recipient. Supervisor architectures exist
+(Mozi arXiv:2603.03655; *Architectures for Building Agentic AI*
+arXiv:2512.09458) but they are **top-down planners issuing constraints**, not
+**recipients of monitor findings deciding what to do**. Nothing found treats
+"monitor → orchestrator → intervention" as a policy question with measured
+outcomes.
+
+It is also the arm that sidesteps both known failure modes at once: no fatigued
+human reading an alert, and no informing the observed agent. And it is the only
+one that acts at machine speed, which matters when the reference incident ran
+4.5 days and ~17,600 actions.
+
+## Where the cost framing actually stands
+
+Not "nobody measures" — SafeMCP reports $0.022 overhead, under 1.5% of spend,
+same order as measured here. The survey *Toward Safe LLM Agents*
+(arXiv:2608.14590) does report four of six runtime monitors not quantifying
+overhead at all, so it is rare. But the real gap is that **nobody sweeps**:
+every paper reports detection at a single operating point. A Pareto curve of
+recall against monitoring spend, anchored by "do nothing" at one end, does not
+appear to exist. The interesting hypothesis is that it is sharply concave — ~1%
+of session spend buying most of the achievable recall.
+
+*The Verifier Tax* (arXiv:2603.19328) independently recommends selective or
+sampling-based verification for long horizons, which is the periodic-window
+design arrived at from the cost side rather than the detection side. Pleasing
+convergence.
+
+## Scoreboard, seven rounds in
+
+Design choices that turned out to be published findings: windowing over
+single-pass, carrying verdicts across windows, independent observer over
+self-review, sampling rather than gating every action.
+
+Design choices that turned out to be wrong or unproven: `--allowedTools ""`
+(no-op), session isolation (leaked), flag-only escalation (the design users
+reject), waking the agent (may degrade the monitor).
+
+The pattern is uncomfortable and consistent: **the engineering held up under
+testing; the claims about it did not.** Every error was in something asserted
+rather than something exercised. An hour of searching in round 1 would have
+caught two of the four.

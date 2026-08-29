@@ -198,6 +198,57 @@ deployed trajectory monitor therefore cannot read CoT at all, whatever the
 theory recommends. That gap between what monitorability research assumes and
 what a real harness records seems worth stating out loud.
 
+## Second round: what a further search added
+
+**The blocked-agent failure mode is measured, and unmonitored.** *Permission
+Denied* ([arXiv:2608.02670](https://arxiv.org/abs/2608.02670)) ✔ runs 12 coding
+agents on Terminal-Bench 2.1 under nested security policies. Blocked agents
+build workarounds (97% of cost inflation), grind through budget rather than
+stopping (59% timeouts, 37% completed-but-incorrect), and carry a 2.59× cost
+multiplier on affected tasks. The paper has **no detection or monitoring
+component** — it measures the behaviour and frames it as intelligent
+adaptation. This is the HF failure mode, at scale, with no monitor pointed at it.
+
+**Alerting the agent may make the monitor worse.** *Reliable Weak-to-Strong
+Monitoring of LLM Agents*
+([arXiv:2508.19461](https://arxiv.org/abs/2508.19461)) ✔ finds that *"an
+agent's knowledge that it is being monitored substantially degrades the
+monitor's reliability"* — agent awareness dominates monitor awareness. It also
+finds that escalating **only pre-flagged cases** to humans improves TPR by ~15%
+at FPR = 0.01, that monitor **scaffolding matters more than monitor
+awareness**, and that good scaffolding lets weaker models reliably monitor
+stronger agents. The `REFLECTION_WAKE_ON_ALERT` tier here tells the observed
+agent it is being watched, and should be treated as unproven on this evidence.
+
+**Overhead is rarely quantified, but not never.** *Toward Safe LLM Agents*
+([arXiv:2608.14590](https://arxiv.org/abs/2608.14590)) reports that four of six
+surveyed runtime-monitoring systems do not quantify overhead at all. SafeMCP
+([arXiv:2606.01991](https://arxiv.org/abs/2606.01991)) does: $0.022, under 1.5%
+of spend — the same order as measured here. *The Verifier Tax*
+([arXiv:2603.19328](https://arxiv.org/abs/2603.19328)) ✔ argues verification
+cost scales with horizon and recommends **selective or sampling-based**
+verification for long ones, which is an independent argument for periodic
+windowed monitoring.
+
+**Self-correction was partly retested, but not on this ground.** *The
+Self-Correction Illusion*
+([arXiv:2606.05976](https://arxiv.org/abs/2606.05976)) includes a frontier
+replication (GPT-4o, Claude Sonnet 4, Gemini 2.5 Flash) — but not
+reasoning-mode models, and not agentic traces. The field mostly routed around
+Huang et al. by grounding critique in external signals rather than retesting.
+
+**Supervisor architectures are planners, not alert recipients.** Mozi
+([arXiv:2603.03655](https://arxiv.org/abs/2603.03655)) and *Architectures for
+Building Agentic AI* ([arXiv:2512.09458](https://arxiv.org/abs/2512.09458))
+describe supervisors that enforce budgets and escalation rules top-down.
+Nothing found treats "monitor → orchestrator → intervention" as a policy
+question with measured outcomes.
+
+**Adjacent, worth a look:** Agent-ToM, monitoring via theory-of-mind reasoning
+about agent intent ([arXiv:2605.24216](https://arxiv.org/abs/2605.24216)).
+
+[RESEARCH-AGENDA.md](RESEARCH-AGENDA.md) works these into concrete experiments.
+
 ## If this were pursued further
 
 In order:

@@ -62,7 +62,7 @@ Layout:
 
 | Variable | Default | Notes |
 |---|---|---|
-| `REFLECTION_WAKE_ON_ALERT` | `0` | Exit 2 on `alert` under `asyncRewake`, waking the main agent. |
+| `REFLECTION_WAKE_ON_ALERT` | `0` | Exit 2 on `alert` under `asyncRewake`, waking the main agent. **Treat as unproven** — see below. |
 | `REFLECTION_ALERT_CMD` | *(unset)* | Shell command run on `concern` and above. |
 
 Without `REFLECTION_ALERT_CMD` the script falls back to `osascript` on macOS
@@ -168,6 +168,22 @@ Already done: denying every tool by name drops the prefix from 41,515 to
 keychain, so on a subscription it fails with an authentication error.
 `--system-prompt` with `--exclude-dynamic-system-prompt-sections` saves a few
 percent more and costs you the default system prompt; rarely worth it now.
+
+### A caveat on waking the agent
+
+*Reliable Weak-to-Strong Monitoring of LLM Agents*
+([arXiv:2508.19461](https://arxiv.org/abs/2508.19461)) finds that an agent's
+knowledge that it is being monitored **substantially degrades the monitor's
+reliability**, and that agent awareness dominates monitor awareness.
+
+`REFLECTION_WAKE_ON_ALERT=1` tells the observed agent, in as many words, that
+something is watching it. On that evidence it may degrade every window after
+the first alert. It is off by default and should stay off unless you are
+willing to trade later observability for one immediate interruption.
+
+The same paper finds that escalating **only pre-flagged cases** to a human
+improves TPR by ~15% at FPR = 0.01, so `REFLECTION_ALERT_CMD` pointed at a
+human channel is the better-evidenced escalation path.
 
 ### Inheriting the parent's effort
 
