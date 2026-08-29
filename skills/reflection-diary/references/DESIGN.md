@@ -92,6 +92,50 @@ fork is worst.
 **4. Isolation needs care.** See below — `--fork-session` is silently
 overridden by an inherited session id.
 
+### The sandbox variant
+
+A natural repair: keep the tool definitions (so the cache prefix matches) and
+contain the reflector at the OS layer instead — a sandbox with no network
+except the Claude API, so tool calls fail structurally.
+
+It fixes the problem it targets and runs into three others.
+
+**The prefix is segmented, and the environment sits in the wrong segment.**
+Measured by running an identical prompt from two different working directories:
+
+| Run | cache_read | cache_write |
+|---|---|---|
+| dir A, cold | 0 | 39,504 |
+| dir A again | 39,504 | 0 |
+| **dir B** | **30,389** | **9,115** |
+| dir A again | 39,504 | 0 |
+
+The ~30k tool block caches independently of a ~9k environment-dependent tail
+(working directory and the other dynamic system-prompt sections). Changing
+directory keeps the tools cached and re-writes the tail.
+
+For a *digest* call that is a rounding error. For a *fork* it is fatal: the
+render order is `tools` → `system` → `messages`, so that 9k tail sits **before**
+the conversation. Invalidate it and every one of the parent's ~300k cached
+message tokens goes with it. A sandbox has, by construction, a different
+filesystem and working directory from the session it observes.
+
+**Giving a monitor tools it cannot use makes it behave like a blocked agent.**
+This is measured: agents denied a resource build workarounds rather than
+stopping — 97% of cost inflation, 2.59× on affected tasks
+([arXiv:2608.02670](https://arxiv.org/abs/2608.02670)). A reflector with a
+defined-but-failing `Bash` will try, fail, reason about the failure, and retry,
+burning output tokens — the most expensive part of the call now that tool
+definitions are gone. It also risks contaminating the verdict with the
+reflector's own frustration at broken tooling.
+
+**Even a perfect cache hit is more expensive and detects less.** Best case,
+everything identical, full hit on a 300k-token context: ~$0.15 per reflection
+in cache reads alone at Opus rates, **growing with session length**, against a
+flat ~$0.04 for a digest that does not grow. And per the recall figures above,
+the fork is the weaker detector. Cheaper *and* better is not a trade-off worth
+reopening.
+
 ### It cannot share the session's cache, for three independent reasons
 
 **Cache is model-scoped.** Measured with the identical prompt at the same
@@ -195,6 +239,66 @@ Four guards, because a fork bomb is unforgiving:
    immediately if it sees it
 3. an atomic `mkdir` lock per session, broken after 15 minutes if stale
 4. the `stop_hook_active` flag Claude Code sets on re-entrant `Stop` hooks
+
+## What "windowing" actually means
+
+The reflector never sees the conversation. It sees a **window** — only the
+transcript lines written since the last reflection — plus a small fixed frame.
+Measured on this project's own session:
+
+| | |
+|---|---|
+| Whole transcript | 1,382 JSONL lines, 2.9 MB, ~747k tokens |
+| One window (50 lines, ~5 min of work) | 116,300 raw chars |
+| That window, digested | **4,177 chars — 4% of raw**, 18 lines |
+| Complete prompt sent to the reflector | **8,806 chars, ~2,200 tokens** |
+| Ratio against sending the whole conversation | **339× smaller** |
+
+### What goes in
+
+| Part | Size | Why |
+|---|---|---|
+| The window, digested | ~4,200 chars | the new activity |
+| The ask of record | ~3,500 chars | first 2 and last 4 human turns — the only authority on intent |
+| Previous entries | ~200 chars | headline + verdict of the last 5, so judgement carries across windows |
+| Activity ledger | ~200 chars | counted in Python, so the model needn't enumerate |
+| System prompt (rubric) | ~830 tokens | identical every call, so it caches |
+| JSON schema | ~390 tokens | identical every call |
+
+### What is stripped, and by how much
+
+Digestion is where the 96% goes:
+
+- **Non-conversation lines dropped entirely** — `attachment`, `atis-latch`,
+  `last-prompt`, `queue-operation` are bookkeeping, not activity.
+- **Tool inputs → 220 chars**, tool results → **260 chars**. This is the bulk of
+  the saving: a `Read` of a 3,000-line file becomes one clipped line. The
+  reflector learns *that* the file was read and roughly what came back, not its
+  contents.
+- **Assistant prose → 900 chars.**
+- **Human turns → 2,000 chars**, and never below that. They define the ask.
+- **Thinking** — nothing to strip; Claude Code doesn't persist the text.
+
+So one turn renders as a handful of lines:
+
+```
+ASSISTANT: I'll reproduce the flake first.
+  -> Bash({"command": "pytest tests/test_upload.py -k retry --count=20"})
+  <- result: 18 passed, 2 failed. AssertionError: expected 3 retries, got 2 …[+41 chars]
+```
+
+### What this costs you
+
+Detail. The reflector cannot inspect a diff line by line or read a file the
+agent read. It sees the *shape* of the work — what was invoked, against what,
+with what outcome — which is the altitude the trajectory question lives at. If
+a verdict needs the detail, the entry's line range and UTC span point straight
+back into the full transcript.
+
+The empirical case for windowing over one big pass is in
+[RELATED-WORK.md](RELATED-WORK.md): single-pass full-trajectory monitoring
+measures recall 0.405 against 0.844 for windowed monitoring that carries
+evidence forward. Windowing reads less *and* detects more.
 
 ## The transcript
 

@@ -3,7 +3,7 @@ name: reflection-diary
 description: Set up, tune, or read a periodic out-of-band reflection diary for a coding agent session. A Claude Code hook reads the session transcript every few minutes and writes a terse diary entry plus a judgement on the trajectory — on track, drifting, unsafe, or blocked — to a file outside the repo, and can alert the operator or interrupt the agent. Use when asked to monitor, observe, audit or babysit an agent's trajectory, to keep a session journal or eval log, to detect scope creep, goal substitution or unsafe actions, or to install, configure or debug the reflection-diary plugin and its hooks.
 license: MIT
 metadata:
-  version: 1.6.0
+  version: 1.6.1
   author: Daniel Demmel
 ---
 
