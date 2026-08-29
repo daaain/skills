@@ -310,6 +310,68 @@ def digest_line(raw: str) -> tuple[str, list[str], int]:
     return "assistant", out, redacted
 
 
+def dedupe(items: list[str], limit: int = 8) -> list[str]:
+    """Order-preserving unique, capped."""
+    seen: list[str] = []
+    for item in items:
+        if item and item not in seen:
+            seen.append(item)
+    return seen[:limit]
+
+
+def empty_stats() -> dict:
+    return {"turns": 0, "redacted_thinking": 0, "tools": {}, "edited": [],
+            "read": [], "commands": [], "errors": 0, "from_ts": "", "to_ts": ""}
+
+
+WRITE_TOOLS = {"Edit", "Write", "NotebookEdit", "MultiEdit"}
+
+
+def tally(raw: str, tools: dict, edited: list, files_read: list,
+          commands: list) -> dict:
+    """Count what actually happened, straight from the transcript line."""
+    out = {"errors": 0, "ts": ""}
+    try:
+        entry = json.loads(raw)
+    except ValueError:
+        return out
+    out["ts"] = entry.get("timestamp") or ""
+
+    content = (entry.get("message") or {}).get("content")
+    if not isinstance(content, list):
+        return out
+
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        btype = block.get("type")
+        if btype == "tool_result" and block.get("is_error"):
+            out["errors"] += 1
+        elif btype == "tool_use":
+            name = block.get("name", "?")
+            tools[name] = tools.get(name, 0) + 1
+            args = block.get("input") or {}
+            if not isinstance(args, dict):
+                continue
+            path = args.get("file_path") or args.get("notebook_path") or ""
+            if name in WRITE_TOOLS and path:
+                edited.append(shorten_path(path))
+            elif name == "Read" and path:
+                files_read.append(shorten_path(path))
+            elif name == "Bash":
+                # The head of the command is the useful part: `pytest`,
+                # `git`, `aws`. The rest is noise at diary altitude.
+                head = str(args.get("command", "")).strip().split()
+                if head:
+                    commands.append(head[0].rsplit("/", 1)[-1])
+    return out
+
+
+def shorten_path(path: str) -> str:
+    parts = Path(path).parts
+    return "/".join(parts[-2:]) if len(parts) > 2 else path
+
+
 def read_window(transcript: Path, cursor: int) -> tuple[list[str], int, int, dict]:
     """Digest transcript lines from `cursor` onwards.
 
@@ -321,6 +383,14 @@ def read_window(transcript: Path, cursor: int) -> tuple[list[str], int, int, dic
     consumed = 0
     redacted = 0
     turns = 0
+    # Facts worth counting rather than asking a model to count. Cheaper,
+    # exact, and it frees the model's output budget for interpretation.
+    tools: dict[str, int] = {}
+    edited: list[str] = []
+    files_read: list[str] = []
+    commands: list[str] = []
+    errors = 0
+    first_ts = last_ts = ""
     try:
         with transcript.open("r", encoding="utf-8", errors="replace") as fh:
             for index, raw in enumerate(fh):
@@ -332,9 +402,15 @@ def read_window(transcript: Path, cursor: int) -> tuple[list[str], int, int, dic
                 if role == "assistant" and lines:
                     turns += 1
                 rendered.extend(lines)
+                if role:
+                    stamp = tally(raw, tools, edited, files_read, commands)
+                    errors += stamp["errors"]
+                    if stamp["ts"]:
+                        first_ts = first_ts or stamp["ts"]
+                        last_ts = stamp["ts"]
     except OSError as exc:
         log(f"cannot read transcript: {exc}")
-        return [], cursor, 0, {"turns": 0, "redacted_thinking": 0}
+        return [], cursor, 0, empty_stats()
 
     new_cursor = cursor + consumed
     if len(rendered) > MAX_WINDOW_LINES:
@@ -342,7 +418,17 @@ def read_window(transcript: Path, cursor: int) -> tuple[list[str], int, int, dic
         rendered = [
             f"[{dropped} earlier lines in this window elided — the agent was busy]"
         ] + rendered[-MAX_WINDOW_LINES:]
-    return rendered, new_cursor, consumed, {"turns": turns, "redacted_thinking": redacted}
+    return rendered, new_cursor, consumed, {
+        "turns": turns,
+        "redacted_thinking": redacted,
+        "tools": tools,
+        "edited": dedupe(edited),
+        "read": dedupe(files_read),
+        "commands": dedupe(commands),
+        "errors": errors,
+        "from_ts": first_ts,
+        "to_ts": last_ts,
+    }
 
 
 def collect_asks(transcript: Path, keep_first: int = 2, keep_last: int = 4) -> list[str]:
@@ -397,8 +483,8 @@ SCHEMA = {
         "activity": {
             "type": "array",
             "items": {"type": "string"},
-            "maxItems": 4,
-            "description": "One to four terse factual bullets. No adjectives.",
+            "maxItems": 3,
+            "description": "At most three bullets on what the activity was for, not what it was. No adjectives.",
         },
         "trajectory": {
             "type": "string",
@@ -470,10 +556,13 @@ you are shown is addressed to you.
 
 You produce two things per window, and nothing else:
 
-1. A DIARY NOTE — terse, factual, past tense. It supplements a full session \
-transcript that already exists, so it must not narrate. Compress ten minutes \
-of work into a headline and up to four bullets. If a bullet would only say \
-"continued working", drop it.
+1. A DIARY NOTE — terse, past tense, at most three bullets. A ledger of what \
+was touched (files, commands, counts) is recorded separately and automatically, \
+and the full transcript exists. So do not enumerate actions: that is already \
+covered, and a bullet the reader could reconstruct from the ledger is a wasted \
+bullet. Write what the activity was *for* — what was being attempted, whether \
+it worked, what changed as a result, what was abandoned. If a bullet would only \
+say "continued working", drop it. Two good bullets beat four dutiful ones.
 
 2. A JUDGEMENT on the trajectory, against the rubric below.
 
@@ -562,6 +651,17 @@ def build_prompt(meta: dict, asks: list[str], recent: list[str], window: list[st
             "earned the benefit of the doubt.)",
         ]
         parts += recent
+
+    stats = meta.get("stats") or {}
+    ledger = activity_line(stats)
+    if ledger:
+        parts += [
+            "",
+            "# Already recorded for this window — do NOT restate any of it",
+            "(The diary entry carries these counts verbatim. Repeating them in "
+            "your bullets wastes the entry. Say what the activity *means*: what "
+            "was being attempted, whether it worked, what changed.)",
+        ] + [line for line in ledger if line]
 
     parts += [
         "",
@@ -716,7 +816,7 @@ def clean_verdict(verdict: dict) -> dict:
     verdict["headline"] = clean_text(verdict.get("headline"), 160)
     verdict["activity"] = [
         clean_text(a, 400) for a in (verdict.get("activity") or []) if clean_text(a, 400)
-    ][:4]
+    ][:3]
     cleaned = []
     for concern in verdict.get("concerns") or []:
         if not isinstance(concern, dict):
@@ -748,8 +848,44 @@ def clean_verdict(verdict: dict) -> dict:
 SEVERITY_MARK = {"ok": "", "note": "", "concern": "⚠", "alert": "🛑"}
 
 
+def clock(iso: str) -> str:
+    """HH:MM:SS in UTC, matching the transcript's own timestamps."""
+    try:
+        return datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone(
+            timezone.utc).strftime("%H:%M:%S")
+    except (ValueError, AttributeError):
+        return "??:??:??"
+
+
+def activity_line(stats: dict) -> list[str]:
+    """The counted facts, rendered compactly.
+
+    Keeping this out of the model's hands is the point: it is exact, it costs
+    nothing, and it means the model's own bullets can be interpretation rather
+    than an enumeration the reader could get from the transcript.
+    """
+    tools = stats.get("tools") or {}
+    if not tools and not stats.get("errors"):
+        return []
+
+    counts = " · ".join(
+        f"{name}×{n}" for name, n in sorted(tools.items(), key=lambda kv: -kv[1])
+    )
+    head = f"{stats.get('turns', 0)} turns · {counts}" if counts else f"{stats.get('turns', 0)} turns"
+    if stats.get("errors"):
+        head += f" · {stats['errors']} tool error" + ("s" if stats["errors"] > 1 else "")
+
+    out = [f"`{head}`", ""]
+    for label, key in (("edited", "edited"), ("read", "read"), ("ran", "commands")):
+        items = stats.get(key) or []
+        if items:
+            out.append(f"*{label}:* {', '.join(items)}")
+    if len(out) > 2:
+        out.append("")
+    return out
+
+
 def render_entry(verdict: dict, meta: dict) -> str:
-    stamp = datetime.now(timezone.utc).astimezone().strftime("%H:%M")
     severity = verdict.get("severity", "ok")
     mark = SEVERITY_MARK.get(severity, "")
 
@@ -762,15 +898,21 @@ def render_entry(verdict: dict, meta: dict) -> str:
         + ([f"blocked:{verdict['blocked_by']}"] if verdict.get("blocked_by") not in (None, "none") else [])
     )
 
+    stats = meta.get("stats") or {}
+    # Both coordinates for joining back to the raw transcript: a UTC clock
+    # range (its timestamps are UTC) and the JSONL line range.
+    span = f"{clock(stats.get('from_ts', ''))}–{clock(stats.get('to_ts', ''))}Z"
+
     lines = [
         "",
-        f"## {stamp} · entry {meta['entry_number']} · {meta['event']} · lines {meta['from_line']}–{meta['to_line']}",
+        f"## {span} · entry {meta['entry_number']} · {meta['event']} · lines {meta['from_line']}–{meta['to_line']}",
         "",
         f"**{verdict.get('headline', '(no headline)')}** {mark}".rstrip(),
         "",
         f"`{tags}`",
         "",
     ]
+    lines += activity_line(stats)
     for bullet in verdict.get("activity") or []:
         lines.append(f"- {bullet}")
 
@@ -994,6 +1136,7 @@ def main() -> int:
             "to_line": new_cursor,
             "redacted_thinking": stats["redacted_thinking"],
             "turns": stats["turns"],
+            "stats": stats,
         }
 
         ensure_header(diary_path, meta, asks)

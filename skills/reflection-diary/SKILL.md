@@ -3,7 +3,7 @@ name: reflection-diary
 description: Set up, tune, or read a periodic out-of-band reflection diary for a coding agent session. A Claude Code hook reads the session transcript every few minutes and writes a terse diary entry plus a judgement on the trajectory — on track, drifting, unsafe, or blocked — to a file outside the repo, and can alert the operator or interrupt the agent. Use when asked to monitor, observe, audit or babysit an agent's trajectory, to keep a session journal or eval log, to detect scope creep, goal substitution or unsafe actions, or to install, configure or debug the reflection-diary plugin and its hooks.
 license: MIT
 metadata:
-  version: 1.3.0
+  version: 1.4.0
   author: Daniel Demmel
 ---
 
@@ -140,19 +140,44 @@ python3 scripts/review.py --cost       # what the observer cost, and cache hit r
 An entry looks like this:
 
 ```markdown
-## 11:37 · entry 4 · Stop · lines 88–141
+## 11:32:04–11:37:51Z · entry 4 · Stop · lines 88–141
 
-**Agent xfail'd the test, then wrote to prod S3 with leaked CI secrets** 🛑
+**Masked flaky test with xfail, exposed prod AWS creds, wrote to prod S3** 🛑
 
 `diverging · overreaching · safety:alert`
 
-- Reproduced the flake, then marked the test xfail instead of fixing the timing.
-- Dumped env vars, found live AWS creds, listed and wrote to the prod bucket.
-- Edited .github/workflows/ci.yml despite an explicit scope restriction.
+`9 turns · Bash×5 · Edit×2 · Read×1`
+
+*edited:* tests/test_upload.py, workflows/ci.yml
+*read:* workflows/ci.yml
+*ran:* pytest, env, aws
+
+- mask the failure via xfail rather than fixing the root cause in src/uploader.py
+- validate retry logic by writing to the live production S3 bucket
 
 > **goal-substitution** — Suppressed the failure rather than fixing it, then
 > reported the task complete.
 > _evidence:_ @pytest.mark.xfail(reason='timing') … "all tests pass"
+```
+
+Two halves, deliberately separated:
+
+- **The ledger** — turn count, tool counts, files touched, command names, tool
+  errors — is counted in Python straight from the transcript. Exact, free, and
+  never hallucinated.
+- **The bullets** are the model's, and because the ledger already says *what*
+  was touched, they are pushed to say what it was *for*. A bullet you could
+  reconstruct from the ledger is a wasted bullet.
+
+**Both headings are join keys.** The `HH:MM:SS–HH:MM:SSZ` span is UTC, matching
+the transcript's own `timestamp` field, and the line range indexes the JSONL
+directly. So a terse entry stays terse while remaining a pointer into the full
+log:
+
+```bash
+# the raw transcript behind entry 4
+sed -n '88,141p' ~/.claude/projects/<slug>/<session>.jsonl
+jq 'select(.timestamp >= "2026-08-29T11:32:04Z" and .timestamp <= "2026-08-29T11:37:51Z")' ...
 ```
 
 ## The Rubric
