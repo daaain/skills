@@ -69,24 +69,28 @@ that chose the trajectory. The whole value of an observer is that it did not
 participate in the decisions it is judging. This one reason would be enough on
 its own.
 
-**2. It does not share the cache anyway — not once you make it safe.** A
-measured fork of a 301k-token session: `cache_read: 0`,
-`cache_write: 282,395`, **$2.83 for one reflection** against $0.07 for the
-digest. The cache key is a prefix match rendered `tools` → `system` →
-`messages`, so `--allowedTools ""` and `--strict-mcp-config` — the flags that
-stop the observer from acting — change the *first* block and invalidate
-everything after it. To hit the parent's cache you would have to leave the
-tool set byte-identical, which means handing the observer Bash, Write, and
-every MCP tool the parent has. Cache sharing and a disarmed observer are
-mutually exclusive. (The cost was measured; the byte-identical-tools converse
-follows from the documented prefix semantics and was not separately tested,
-because confirming it costs another $2.83.)
+**2. Sharing the cache and disarming the observer are mutually exclusive.**
+This needed more care than my first pass gave it. Tested on a small throwaway
+session, forking with `--permission-mode dontAsk` or `--strict-mcp-config`
+kept the cache intact (30,251 cached read in every case) — so a fork *can*
+share the parent's cache. What breaks it is **removing the tool definitions**,
+because the cache key is a prefix match rendered `tools` → `system` →
+`messages` and the tool block comes first.
 
-**3. Its context grows without bound.** The digest reflects on a window; a
-fork re-reads the entire conversation every time, so cost climbs with session
-length exactly when reflections matter most.
+Since denying tools is exactly what makes the observer safe (see
+[Disarming the observer](#disarming-the-observer)), the two are in direct
+conflict. A cache-sharing fork is one that still has Bash, Write and every MCP
+tool defined, gated only by a permission mode that still permits reads.
 
-**4. In this environment the fork was not isolated at all.** See below.
+**3. It is more expensive, not less, and gets worse with time.** A fork
+re-reads the whole conversation every time; the digest reads a window. After
+denying tools the digest costs ~8k input tokens per reflection regardless of
+session length, while a fork of a 301k-token session starts at 301k and
+climbs. Reflections matter most in long sessions, which is exactly where the
+fork is worst.
+
+**4. Isolation needs care.** See below — `--fork-session` is silently
+overridden by an inherited session id.
 
 ### It cannot share the session's cache, for three independent reasons
 
@@ -238,16 +242,33 @@ count of redacted blocks goes into the usage ledger, so it is visible if that
 ever changes. `CONFIGURATION.md` has the thinking settings and a one-liner for
 checking whether your own transcripts carry the text.
 
-## The observer never acts
+## Disarming the observer
 
-The reflector runs with `--allowedTools ""` and `--permission-mode dontAsk`.
-It receives a digest on stdin and returns a JSON object against a schema. The
-hook script does all the writing.
+The reflector receives a digest on stdin and returns a JSON object against a
+schema. The hook script does all the writing.
 
 This is deliberate. An observer with tools is another agent that can go wrong,
 in a session nobody is watching, and it would need write access to be useful.
-Keeping it a pure function of transcript-to-judgement means the worst it can
-do is be wrong in a text file.
+Keeping it a pure transcript-to-judgement function means the worst it can do
+is be wrong in a text file.
+
+Getting there is fiddlier than it looks, and the obvious approach silently
+fails:
+
+| Flag | What it actually does |
+|---|---|
+| `--allowedTools ""` | **Nothing.** It is a permission *allowlist* — which tools may run without prompting — not a filter on what is defined. Measured: 38 tools present with and without it. |
+| `--disallowedTools "*"` | Removes every tool — including the internal `StructuredOutput` tool that `--json-schema` is delivered through. Structured output then fails with *"unable to call the StructuredOutput tool — it's being denied by permissions"*. |
+| `--disallowedTools "<every tool by name>,mcp__.*"` | **Correct.** Zero tools remain, `--json-schema` keeps working. |
+
+So `DENIED_TOOLS` in `reflect.py` enumerates the built-ins and adds an
+`mcp__.*` pattern for connector tools. A tool Claude Code adds later would
+slip through, which is why `--permission-mode dontAsk` stays on as a backstop
+and `REFLECTION_EXTRA_DENY` exists for custom tools.
+
+Removing the definitions is also the largest cost saving in the whole design:
+the prompt drops from 41,515 input tokens to 8,516, about 80%. The safety fix
+and the cost fix are the same change.
 
 ## Prompt injection
 

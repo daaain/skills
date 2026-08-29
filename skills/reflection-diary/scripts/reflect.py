@@ -87,6 +87,7 @@ WAKE_ON_ALERT = env_flag("REFLECTION_WAKE_ON_ALERT", False)
 USE_BARE = env_flag("REFLECTION_BARE", False)
 DISABLED = env_flag("REFLECTION_DISABLED", False)
 ALERT_CMD = env_str("REFLECTION_ALERT_CMD", "")
+EXTRA_DENY = [t for t in env_str("REFLECTION_EXTRA_DENY", "").split(",") if t.strip()]
 DEBUG = env_flag("REFLECTION_DEBUG", False)
 
 # Per-field truncation for the digest. Tool traffic is the bulk of a
@@ -99,6 +100,35 @@ TRUNC_TEXT = env_int("REFLECTION_TRUNC_TEXT", 900)
 # Events that reflect regardless of the throttle: the transcript is about to
 # be destroyed, or the session is ending, so it's now or never.
 FORCED_EVENTS = {"PreCompact", "SessionEnd"}
+
+# Tools denied to the reflector, so it is a pure text-in / JSON-out call.
+#
+# Two traps here, both found the hard way:
+#   * `--allowedTools ""` does NOT do this. It is a permission allowlist, not
+#     a tool filter; passing it an empty string is a silent no-op that leaves
+#     every tool defined.
+#   * `--disallowedTools "*"` does remove everything — including the internal
+#     StructuredOutput tool that `--json-schema` is delivered through, which
+#     breaks structured output entirely.
+#
+# So the list is enumerated instead, with an `mcp__.*` pattern for connector
+# tools. Anything Claude Code adds later slips through, which is why
+# `--permission-mode dontAsk` stays on as a backstop. REFLECTION_EXTRA_DENY
+# appends to this for environments with custom tools.
+DENIED_TOOLS = [
+    "Task", "Artifact", "Bash", "BashOutput", "KillShell", "Edit", "Write",
+    "Read", "Glob", "Grep", "NotebookEdit", "WebFetch", "WebSearch",
+    "TodoWrite", "Skill", "SlashCommand", "EnterPlanMode", "ExitPlanMode",
+    "EnterWorktree", "ExitWorktree", "Monitor", "Workflow", "ToolSearch",
+    "SendMessage", "SendUserFile", "PushNotification", "ScheduleWakeup",
+    "ReadNotifications", "ReportFindings", "DesignSync",
+    "CronCreate", "CronDelete", "CronList",
+    "ListAgents", "ListConnectors", "ListPlugins", "ListSkills",
+    "SearchMcpRegistry", "SearchPlugins", "SearchSkills",
+    "SuggestConnectors", "SuggestPluginInstall", "SuggestSkills",
+    "ShowOnboardingRolePicker", "TaskOutput", "TaskStop",
+    "mcp__.*",
+]
 
 LOCK_STALE_SECONDS = 15 * 60
 
@@ -523,7 +553,14 @@ def build_prompt(meta: dict, asks: list[str], recent: list[str], window: list[st
     parts += [f"{i}. {ask}" for i, ask in enumerate(asks, 1)] or ["(none recorded yet)"]
 
     if recent:
-        parts += ["", "# Your previous entries (for continuity — do not repeat them)"]
+        parts += [
+            "",
+            "# Your previous entries, newest last",
+            "(Continuity, not material to repeat. A verdict you have already "
+            "given twice is itself evidence: an agent still 'meandering' three "
+            "windows on is stuck, and one you called faithful throughout has "
+            "earned the benefit of the doubt.)",
+        ]
         parts += recent
 
     parts += [
@@ -567,7 +604,7 @@ def run_reflector(prompt: str, effort: str = "") -> tuple[dict | None, dict]:
            "--output-format", "json",
            "--json-schema", json.dumps(SCHEMA),
            "--append-system-prompt", SYSTEM_PROMPT,
-           "--allowedTools", "",
+           "--disallowedTools", ",".join(DENIED_TOOLS + EXTRA_DENY),
            "--permission-mode", "dontAsk",
            "--strict-mcp-config"]
 
@@ -772,14 +809,26 @@ def ensure_header(diary: Path, meta: dict, asks: list[str]) -> None:
     diary.write_text("\n".join(header), encoding="utf-8")
 
 
-def tail_entries(diary: Path, count: int = 3) -> list[str]:
-    """Headlines of the last few entries, so the reflector has continuity."""
+ENTRY_HEAD = re.compile(
+    r"^\*\*(?P<headline>.+?)\*\*[^\n]*\n\n`(?P<tags>[^`]+)`",
+    flags=re.MULTILINE,
+)
+
+
+def tail_entries(diary: Path, count: int = 5) -> list[str]:
+    """Recent entries WITH their verdicts, so the reflector has an outside view.
+
+    Headlines alone give continuity of narrative but not of judgement. Carrying
+    the verdicts lets a reflection see that it already called this meandering
+    twice — which is the difference between "still refactoring" and "stuck for
+    twenty minutes", and it is the only cross-window signal the observer gets.
+    """
     try:
         text = diary.read_text(encoding="utf-8")
     except OSError:
         return []
-    heads = re.findall(r"^\*\*(.+?)\*\*", text, flags=re.MULTILINE)
-    return [f"- {h}" for h in heads[-count:]]
+    found = [(m.group("headline"), m.group("tags")) for m in ENTRY_HEAD.finditer(text)]
+    return [f"- [{tags}] {head}" for head, tags in found[-count:]]
 
 
 def record_usage(ledger: Path, row: dict) -> None:

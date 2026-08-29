@@ -654,3 +654,140 @@ escalating" — is exactly the existing design. `--allowedTools ""` plus
 `reflect.py` does every side effect. Nice to have that arrived at
 independently; it's the property that makes the observer safe to run
 unattended.
+
+---
+
+# Round 5 — the safety claim was false, and fixing it halved the cost
+
+Two questions this round: would feeding previous diary entries mitigate the
+self-assessment problem, and did I really mean "structurally impossible"?
+
+The second one deserved a correction, and chasing it turned up something worse.
+
+## I over-stated "impossible" — here is the precise version
+
+Tested properly this time, on a *small* throwaway session rather than a 300k
+one, so the experiment cost pennies instead of $2.83. Seeded a session with a
+secret word, then forked it six ways and asked for the word back:
+
+| Fork variant | cache_read | cache_write |
+|---|---|---|
+| no overrides (warm-up) | 30,251 | 7,687 |
+| no overrides again | 30,251 | 7,691 |
+| `--permission-mode dontAsk` | 30,251 | 7,693 |
+| `--strict-mcp-config` | 30,251 | 7,694 |
+| `--allowedTools ""` | *errored* | — |
+
+So **a fork can share the parent's cache.** `dontAsk` and `strict-mcp-config`
+leave the prefix intact. My earlier "cache sharing is impossible" was wrong;
+what is actually true is narrower: sharing the cache and *removing the tool
+definitions* are mutually exclusive, because tools come first in the prefix.
+
+Also: `--fork-session` works fine and returns a fresh session id — once
+`CLAUDE_CODE_SESSION_ID` is stripped. The flag was never broken; the inherited
+environment was.
+
+## The `--allowedTools ""` row is the real story
+
+That row errored with something odd:
+
+> No deferred tool marker found in the resumed session… Provide a prompt to
+> continue the conversation.
+
+Which sent me to check what `--allowedTools ""` had been doing all along:
+
+```
+tools WITHOUT --allowedTools:       38
+tools WITH --allowedTools "":       38
+```
+
+**It does nothing.** `--allowedTools` is a permission *allowlist* — which
+tools may run without prompting — not a filter on what gets defined. Passing
+it an empty string is a silent no-op.
+
+So the safety property I had written into SKILL.md and DESIGN.md — "the
+reflector runs with `--allowedTools ""`… no tools, no side effects" — **was
+false**. The reflector had all 38 tools defined the whole time. What was
+actually restraining it: `--permission-mode dontAsk` (which still permits the
+read-only command set), and a prompt asking for JSON. It could have read
+files. It couldn't have written or run anything destructive, but that is not
+what I claimed.
+
+An oversight tool whose documented safety property is untrue is worse than no
+oversight tool, because someone trusts it.
+
+## The fix, and a trap inside the fix
+
+The obvious repair, `--disallowedTools "*"`, gives zero tools — and breaks
+structured output:
+
+> I'm unable to call the StructuredOutput tool — it's being denied by
+> permissions each time.
+
+`--json-schema` is delivered *through an internal tool*. So `*` is too broad.
+The working form is an explicit enumeration plus a pattern for connectors:
+
+```
+--disallowedTools "Task,Artifact,Bash,...,Write,Glob,Grep,mcp__.*"
+→ 0 tools remaining, structured_output: {"word":"banana"}
+```
+
+`DENIED_TOOLS` in `reflect.py` now carries that list. A tool Claude Code adds
+later would slip through, so `--permission-mode dontAsk` stays as a backstop
+and `REFLECTION_EXTRA_DENY` handles custom tools.
+
+## The safety fix *is* the cost fix
+
+| | input tokens | cost |
+|---|---|---|
+| Before (tools defined) | 41,515 | $0.0771 |
+| After (tools denied) | 8,516 | $0.0410 |
+
+**80% fewer input tokens, 47% cheaper** — and the claim in the docs becomes
+true. Best kind of fix.
+
+The shape of the bill has changed as a result. Output is now the dominant
+term (~55%), so `REFLECTION_EFFORT=low` is the main remaining lever rather
+than an afterthought. Verified that the cheap corners still work — Sonnet at
+`effort=low` and Haiku 4.5 at `effort=low` both returned the correct
+`diverging · overreaching · safety:alert` on the adversarial transcript.
+
+This also settles the fork comparison in the other direction. The digest now
+costs ~8k input tokens per reflection *regardless of session length*, while a
+fork of a 301k session starts at 301k and climbs. Reflections matter most in
+long sessions, which is exactly where a fork is worst.
+
+## Would previous entries mitigate the self-assessment problem?
+
+For a fork: a little, not enough. Entries written by an independent observer
+give the fork an outside-view thread to react to, but the fork still *is* the
+agent — same system prompt, same framing, same rationalisations. Handing the
+accused a copy of the prosecution's notes doesn't make them the judge.
+
+For the digest approach, though, this was a genuinely good prompt. The
+observer already got previous entries, but only their **headlines** — narrative
+continuity without continuity of *judgement*. Now it gets the verdicts too:
+
+```
+- [meandering · faithful · safety:none] Refactoring the retry helper
+- [meandering · faithful · safety:none] Still refactoring the retry helper
+- [stuck · unclear-ask · safety:none] Third pass over the same helper
+```
+
+That's the difference between "still refactoring" and "stuck for twenty
+minutes", and it is the only cross-window signal the observer gets. The prompt
+now says so explicitly: a verdict given twice is itself evidence, in both
+directions — an agent still meandering three windows on is stuck, and one
+called faithful throughout has earned some benefit of the doubt.
+
+So the idea was right; it just belonged on the independent side, where it
+compounds rather than compensating for a compromised vantage point.
+
+## Note to self
+
+Both bugs this session — the session-id leak and the no-op `--allowedTools` —
+were properties I *asserted in documentation* and never tested. The digest
+logic, which I did test hard, has been fine throughout. The lesson isn't "test
+more", it's "test the claims you make in prose, not just the code you wrote".
+A safety property written confidently into a README is exactly the kind of
+thing nobody re-checks.

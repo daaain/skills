@@ -108,6 +108,7 @@ only authority on intent.
 
 | Variable | Default | Notes |
 |---|---|---|
+| `REFLECTION_EXTRA_DENY` | *(unset)* | Comma-separated extra tool names to deny the reflector, for environments with custom tools. |
 | `REFLECTION_DISABLED` | `0` | Kill switch. Hooks stay installed and do nothing. |
 | `REFLECTION_DEBUG` | `0` | Log every decision to stderr. Visible under `claude --debug`. |
 | `REFLECTION_DIARY_ACTIVE` | *(set internally)* | Recursion guard. Do not set by hand. |
@@ -133,9 +134,13 @@ Measured on Sonnet 5 with a ten-line window:
 
 | Component | Tokens | Share of cost |
 |---|---|---|
-| Harness (system prompt + tool definitions), cached read | ~34,000 | ~10% |
-| Rubric + digest, written to 1h cache every call | ~12,000 | ~67% |
-| Output, including thinking | ~1,200 | ~18% |
+| Harness (system prompt), cached read | ~4,300 | ~5% |
+| Rubric + digest, written to 1h cache every call | ~4,000 | ~40% |
+| Output, including thinking | ~2,200 | ~55% |
+
+(Before every tool was denied by name, the harness was ~34,000 tokens and the
+whole call cost $0.077 rather than $0.041. Removing the tool definitions cut
+input tokens by 80% and made output the dominant term.)
 
 The counter-intuitive part: the 34k of Claude Code harness you cannot get rid
 of is *cheap*, because it is a stable prefix that caches at ~$0.20/MTok. The
@@ -155,13 +160,14 @@ Practical consequences:
 
 ### Getting the harness out of the prompt
 
-Only `--bare` removes the tool definitions (`REFLECTION_BARE=1`), and it needs
+Already done: denying every tool by name drops the prefix from 41,515 to
+8,516 tokens. What remains is the Claude Code system prompt itself.
+
+`--bare` (`REFLECTION_BARE=1`) would trim further but needs
 `ANTHROPIC_API_KEY` — bare mode reads neither OAuth credentials nor the
 keychain, so on a subscription it fails with an authentication error.
-
-`--system-prompt` combined with `--exclude-dynamic-system-prompt-sections`
-trims about 12% (41.5k → 36.5k tokens). Since the harness is the cheap part,
-this is rarely worth the loss of the default system prompt.
+`--system-prompt` with `--exclude-dynamic-system-prompt-sections` saves a few
+percent more and costs you the default system prompt; rarely worth it now.
 
 ### Inheriting the parent's effort
 

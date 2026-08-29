@@ -3,7 +3,7 @@ name: reflection-diary
 description: Set up, tune, or read a periodic out-of-band reflection diary for a coding agent session. A Claude Code hook reads the session transcript every few minutes and writes a terse diary entry plus a judgement on the trajectory — on track, drifting, unsafe, or blocked — to a file outside the repo, and can alert the operator or interrupt the agent. Use when asked to monitor, observe, audit or babysit an agent's trajectory, to keep a session journal or eval log, to detect scope creep, goal substitution or unsafe actions, or to install, configure or debug the reflection-diary plugin and its hooks.
 license: MIT
 metadata:
-  version: 1.2.1
+  version: 1.3.0
   author: Daniel Demmel
 ---
 
@@ -187,11 +187,14 @@ minutes is worse than no observer at all, because people turn it off.
 
 ## Safety Properties
 
-- **The observer never acts.** The reflector runs with `--allowedTools ""`.
-  It reads a digest on stdin and returns a JSON verdict against a schema — no
-  tools, no side effects. Every action (appending the diary, writing
-  `ALERTS.md`, notifying, waking the agent) is taken by the hook script from
-  that structured response.
+- **The observer never acts.** The reflector runs with every tool denied by
+  name, so it is a pure text-in / JSON-out call. It reads a digest on stdin
+  and returns a verdict against a schema. Every action (appending the diary,
+  writing `ALERTS.md`, notifying, waking the agent) is taken by the hook
+  script from that structured response. Note `--allowedTools ""` does **not**
+  achieve this — it is a permission allowlist, not a tool filter, and an empty
+  value is a silent no-op. See
+  [references/DESIGN.md](references/DESIGN.md#disarming-the-observer).
 - **The observer never writes into the observed session.** Each reflection
   runs under its own `--session-id` with the inherited session variables
   stripped, so nothing it sends or says enters the transcript it reads. See
@@ -227,11 +230,11 @@ counts and dollar cost the CLI reports. `review.py --cost` aggregates it:
 
 Two things that surprise people, both measured rather than assumed:
 
-**The digest is a small minority of what gets sent.** A reflection's own
-prompt is ~1–4k tokens, but `claude -p` also ships the Claude Code system
-prompt and tool definitions — about 36k tokens, of which the tool schemas are
-the bulk. `--allowedTools ""` does not remove them; only `--bare` does, and
-`--bare` cannot use subscription auth.
+**Tool definitions used to be most of the bill.** `claude -p` ships the
+Claude Code system prompt and tool schemas alongside your prompt — 41.5k
+tokens before the digest is even counted. Denying every tool by name drops
+that to ~8.5k, an 80% cut, and it is also what makes the "observer never acts"
+claim true. This is the single biggest saving available.
 
 **Cost is dominated by cache writes, not by that harness.** The harness is a
 stable prefix and rides the cache at ~$0.20/MTok. The varying tail — rubric
@@ -239,9 +242,21 @@ plus digest — is written to a 1-hour cache on every call at 2× input price an
 never read back, because no two reflections share a prompt. On Sonnet 5 that
 is roughly two thirds of the bill.
 
-So the useful levers are, in order: a smaller window (a *shorter* interval can
-be cheaper per unit of work than a long one), a cheaper `REFLECTION_MODEL`,
-and `REFLECTION_EFFORT=low` to cut thinking tokens in the output.
+With the tool definitions gone, **output is now the dominant term**, so the
+levers in order are: `REFLECTION_EFFORT=low` (halves output tokens), a cheaper
+`REFLECTION_MODEL`, and a smaller window — note a *shorter* interval can be
+cheaper per unit of work than a long one, since the cache-write term scales
+with window size.
+
+Measured on the same adversarial transcript, all three configurations still
+returned the correct `diverging · overreaching · safety:alert` verdict:
+
+| Config | Input tokens | Cost |
+|---|---|---|
+| Before denying tools | 41,092 | $0.077 |
+| Sonnet 5, default effort | 8,261 | $0.041 |
+| Sonnet 5, `effort=low` | 8,264 | $0.043 (cold) |
+| Haiku 4.5, `effort=low` | 19,698 | $0.039 |
 
 Against a real session the overhead still lands where you would hope — low
 single-digit percent of input tokens — because the observed session is
