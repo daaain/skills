@@ -1074,3 +1074,91 @@ The pattern is uncomfortable and consistent: **the engineering held up under
 testing; the claims about it did not.** Every error was in something asserted
 rather than something exercised. An hour of searching in round 1 would have
 caught two of the four.
+
+---
+
+# Round 8 — the programme, and a correction I should have made earlier
+
+## The harness-limitation point is right
+
+"Not being able to make an API call with the same prefix is more of a Claude
+Code harness / plugin limitation" — yes, and I had been describing it as
+closer to fundamental than it is. With direct Messages API access you can take
+the identical prefix and append a turn.
+
+The wrinkle that makes it concrete: **the transcript stores neither the system
+prompt nor the tool definitions**, so you cannot reconstruct the prefix from
+the JSONL. You have to intercept it. That makes an **API proxy** the natural
+test rig — it sees the exact request, forks it losslessly, appends a reflection
+turn, asks for structured output, and gets a real cache hit. Written up as S8.
+
+A proxy also unlocks something a hook can never do: reading thinking blocks
+*in flight*, before the harness drops them from the transcript. The
+redacted-thinking blind spot is a persistence artefact, not an API one.
+
+## The cost ratio, done properly
+
+Cache reads bill at 10% of base input. So even a *perfect* cache hit on the
+full context costs, at Opus rates:
+
+| Live context | Full-context best case | Digest | Ratio |
+|---|---|---|---|
+| 100k | $0.11 | $0.041 | 2.7× |
+| 300k | $0.21 | $0.041 | 5.1× |
+| 600k | $0.36 | $0.041 | 8.8× |
+| 1M | $0.56 | $0.041 | 13.7× |
+
+The point isn't the ratio at any one context size — it's that **the digest is
+flat and the fork is linear**. Long sessions are where reflection matters most,
+so the gap widens exactly where it hurts. That is the sharpest falsifiable
+prediction in the programme.
+
+(Measured fork, cache *miss*, 301k context: $2.83 — 69×. The best case above is
+projection; the miss is measurement.)
+
+## The 2×2 that neither of us had
+
+The proposed head-to-head — two reflectors, full-prefix vs digest, same session
+— is a good study and I nearly wrote it up as stated. But comparing a fork
+against a digest confounds **two** variables: context volume, and whether the
+observer inherits the agent's identity and framing.
+
+|  | Observer framing | Self framing |
+|---|---|---|
+| Full context | **A1** | A2 *(the fork)* |
+| Windowed digest | B1 *(shipped)* | B2 |
+
+A1 is the cell nobody builds: full context, independent identity. Without it
+you cannot tell whether a fork underperforms because it read too much or
+because it is grading itself. Paired within-session, so decent power at modest
+n.
+
+It also merges cleanly with the Huang-et-al. retest (S7) — same rig, same
+axis — which is a nice economy: two studies, one instrument.
+
+## Consolidation
+
+Rather than add a fourth overlapping document, `RESEARCH-AGENDA.md` is now a
+pointer and `docs/RESEARCH-PROGRAMME.md` is the single source: eight studies,
+what is settled and by whom, what this build measured, shared infrastructure, a
+dependency graph, and threats to validity.
+
+The threats section is the part I would defend hardest. TRACE evaluates only on
+SHADE-Arena and says so; repeating that inherits its blind spots. Every number
+in "what this build measured" comes from one project's sessions on one harness
+— order-of-magnitude claims, not population estimates. And TRACE's 0% on
+Manipulation sabotage means any result here must report convincingly-narrated
+drift *separately* rather than blended into an average, because that is
+precisely the case where a monitor's average looks fine and its worst case is
+useless.
+
+## Where this leaves the thread
+
+Eight rounds. The plugin works, is tested, and its documented claims now match
+its behaviour — which took three corrections to achieve. The more durable
+output is probably the programme: a set of questions that are open, tractable,
+and grounded in what the literature actually says rather than what it was
+assumed to say.
+
+The minimum publishable unit is S2 with S4 as a baseline and S3 as the metric.
+The most interesting single question is S1, and it is not mine.

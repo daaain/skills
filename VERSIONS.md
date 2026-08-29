@@ -5,9 +5,12 @@ Current versions of all skills. Agents can compare against local versions to che
 | Skill | Version | Last Updated |
 |-------|---------|--------------|
 | devcontainer-security | 1.1.1 | 2026-08-29 |
-| reflection-diary | 1.6.1 | 2026-08-29 |
+| reflection-diary | 1.6.2 | 2026-08-29 |
 
 ## Recent Changes
+
+### 2026-08-29
+- **reflection-diary**: 1.6.1 → 1.6.2
 
 ### 2026-08-29
 - **reflection-diary**: 1.6.0 → 1.6.1
