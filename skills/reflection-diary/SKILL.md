@@ -3,7 +3,7 @@ name: reflection-diary
 description: Set up, tune, or read a periodic out-of-band reflection diary for a coding agent session. A Claude Code hook reads the session transcript every few minutes and writes a terse diary entry plus a judgement on the trajectory — on track, drifting, unsafe, or blocked — to a file outside the repo, and can alert the operator or interrupt the agent. Use when asked to monitor, observe, audit or babysit an agent's trajectory, to keep a session journal or eval log, to detect scope creep, goal substitution or unsafe actions, or to install, configure or debug the reflection-diary plugin and its hooks.
 license: MIT
 metadata:
-  version: 1.4.0
+  version: 1.5.0
   author: Daniel Demmel
 ---
 
@@ -288,9 +288,36 @@ single-digit percent of input tokens — because the observed session is
 enormous by comparison. But measure your own with `--cost` rather than trusting
 that.
 
+## How This Relates to the Literature
+
+Windowed trajectory monitoring is an established pattern, and the numbers
+support two choices made here. TRACE
+([arXiv:2606.07054](https://arxiv.org/abs/2606.07054)) reports that reading a
+whole trajectory in one pass has recall 0.405 — it misses about 60% of
+sabotage — while windowed monitoring that carries evidence between windows
+reaches 0.844. Windowing is the better method, not a cost compromise, and
+feeding previous verdicts forward is the mechanism that makes it work.
+
+Two findings cut against this design and are worth knowing before trusting it:
+
+- **Same-family monitors are worse.** Monitors from the monitored model's own
+  lineage overfit to its failure modes
+  ([arXiv:2607.06596](https://arxiv.org/abs/2607.06596)). The default here is a
+  Claude model watching Claude.
+- **Alerts get dismissed.** In a 107-developer study, sabotage still succeeded
+  in 63% of sessions *with* a monitor, and 56% accepted malicious code even
+  when correctly alerted; only 9% wanted flag-only alerts
+  ([arXiv:2606.05647](https://arxiv.org/abs/2606.05647)). This tool is
+  currently flag-only.
+
+[references/RELATED-WORK.md](references/RELATED-WORK.md) has the full review,
+including what looks genuinely under-served.
+
 ## Further Reading
 
 - [references/DESIGN.md](references/DESIGN.md) — why each hook, the recursion
   problem, the transcript format, testing, and known limitations
 - [references/CONFIGURATION.md](references/CONFIGURATION.md) — every knob,
   recipes for CI and unattended runs, and troubleshooting
+- [references/RELATED-WORK.md](references/RELATED-WORK.md) — prior work, what
+  is established, what is measured, and what is not

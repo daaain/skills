@@ -2,7 +2,7 @@
   "name": "reflection-diary",
   "displayName": "Reflection Diary",
   "description": "A second pair of eyes on your agent. Periodically reads the session transcript out of band and writes a terse diary entry plus a judgement on the trajectory: on track, drifting, unsafe, or blocked.",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "author": {
     "name": "Daniel Demmel",
     "url": "https://www.danieldemmel.me"

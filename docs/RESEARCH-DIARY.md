@@ -791,3 +791,151 @@ logic, which I did test hard, has been fine throughout. The lesson isn't "test
 more", it's "test the claims you make in prose, not just the code you wrote".
 A safety property written confidently into a README is exactly the kind of
 thing nobody re-checks.
+
+---
+
+# Round 6 — an activity ledger, and finding out this is a known pattern
+
+## The ledger
+
+Two suggestions, both good, and they compose: add a note of activity to stop
+entries reading "still doing the same thing", and put timestamps on entries so
+they can be joined back to the full log instead of having to restate it.
+
+Implemented as a **deterministic ledger counted in Python**, not asked of the
+model:
+
+```
+## 11:32:04–11:37:51Z · entry 4 · Stop · lines 88–141
+
+**Masked flaky test with xfail, exposed prod AWS creds, wrote to prod S3** 🛑
+
+`diverging · overreaching · safety:alert`
+
+`9 turns · Bash×5 · Edit×2 · Read×1`
+
+*edited:* tests/test_upload.py, workflows/ci.yml
+*read:* workflows/ci.yml
+*ran:* pytest, env, aws
+```
+
+Counting in code rather than in the prompt is free, exact, and unhallucinable.
+It also improves the prose half: since the ledger already says *what* was
+touched, the model is told not to restate it and to say what the activity was
+*for*. Bullets dropped from four to three and got more interpretive — "mask the
+failure via xfail rather than fixing the root cause" rather than "edited
+test_upload.py".
+
+Both heading coordinates are join keys. The span is UTC to match the
+transcript's own `timestamp` field; the line range indexes the JSONL. So an
+entry can stay terse precisely *because* it is a pointer rather than a
+summary — which was the original framing and is now actually true.
+
+Output tokens did not fall as hoped (~2.2k → ~3.1k), because thinking
+dominates output and the visible bullets were never the bulk. Not worth
+chasing further.
+
+## Lit review: this is an established pattern
+
+Asked whether any of this is novel. Mostly not, and the ways it isn't are
+useful. Full write-up in `references/RELATED-WORK.md`; the load-bearing bits:
+
+### The self-reflection critique matches what I argued about forking
+
+Huang et al., *LLMs Cannot Self-Correct Reasoning Yet* (arXiv:2310.01798):
+without an external signal, intrinsic self-correction can *lower* accuracy,
+and the bottleneck is error **detection**, not correction. "The model that
+confidently wrote a wrong line of reasoning is the same model now asked to
+find the flaw in it."
+
+That is nearly verbatim the argument I made against a forked reflector two
+rounds ago. Reassuring to find it is the field's settled position rather than
+my hunch, and mildly deflating to find it was settled in 2023.
+
+### TRACE has already built this, and benchmarked it
+
+arXiv:2606.07054, on SHADE-Arena (463 trajectories):
+
+| Monitor | F1 | Recall | Precision |
+|---|---|---|---|
+| TRACE (windows + cross-window evidence) | 0.713 | **0.844** | 0.641 |
+| Sequential (fixed chunks + running summary) | 0.700 | 0.580 | 0.883 |
+| Full-trajectory (one pass) | 0.577 | **0.405** | 1.000 |
+
+Three things I did not expect:
+
+1. **Full-trajectory monitoring has recall 0.405.** Reading everything at once
+   misses ~60% of sabotage. So windowing is not a cost compromise, it is the
+   *better method* — and this settles the fork-vs-digest argument on detection
+   grounds, not just cost. A fork is exactly the worst-performing row.
+2. **Cross-window evidence propagation is TRACE's stated core innovation** —
+   which is the change I made this same session, at the user's suggestion,
+   for what I thought were narrative-continuity reasons. Right mechanism,
+   accidentally.
+3. **Windowing costs precision** (1.000 → 0.641). More catches, more false
+   alarms. Good argument for keeping the interrupting tier conservative.
+
+TRACE's worst failure is a warning I should not gloss: on *Manipulation*
+sabotage — plausible local justifications — it detects **0%**, while the
+dumber sequential baseline gets 58.8%. Iterative evidence-gathering is *more*
+seducible by a convincing cover story. This design inherits that.
+
+### The human study is the uncomfortable one
+
+*Coding with "Enemy"* (arXiv:2606.05647), 107 developers, five-hour sessions:
+
+- 94% missed the sabotage unaided
+- with an LLM monitor, sabotage **still succeeded in 63% of sessions**
+- when the monitor alerted *correctly*, **56% accepted the malicious code anyway**
+- only **9% wanted flag-only alerts**; **70% wanted recommend-and-wait**
+
+The escalation ladder I built is flag-only. It is the design developers want
+least and demonstrably dismiss. `note_to_operator` occasionally drifts into a
+recommendation by accident; making it a required `recommended_action` — *here
+is the specific revert to run* — is the best-evidenced improvement available
+and about an afternoon's work.
+
+Deliberately did not implement it this round. The ask was a review to decide
+whether to invest more, and quietly acting on the review would pre-empt that
+decision.
+
+### A weakness sitting in the default config
+
+*Calibration-Family Overfit* (arXiv:2607.06596): monitors from the **same
+family** as the monitored model perform *worse* — they overfit to that
+family's failure modes. The default is Sonnet 5 watching Claude Code running
+Claude. Same lineage. A Claude Code plugin cannot easily use a non-Claude
+monitor, so this is a real limitation with no fix in this form. Documented
+rather than glossed.
+
+## What still looks under-served
+
+Not the detection method — that is TRACE's, published and better specified.
+But:
+
+1. **Attribution beyond the agent.** Every monitor found outputs a suspicion
+   score about the agent. The `blocked_by` axis asks whether the *brief* was
+   underspecified or the *tools* broken. Nothing in the search does that, and
+   given how readily alerts get dismissed, a monitor that sometimes says "this
+   one is on you" is plausibly more trusted. Cheap to test, and the idea I'd
+   pursue first.
+2. **Recommend-and-wait** — evidenced, missing, easy.
+3. **Deployment reality.** The literature is benchmarks; measured overhead in a
+   real harness is not represented.
+4. **A monitorability blind spot.** CoT-monitorability work treats
+   chain-of-thought as the surface to watch. Deployed Claude Code does not
+   persist thinking text at all. The gap between what monitorability research
+   assumes and what a real harness records seems worth stating.
+
+## Honest note on the review
+
+Three papers were actually read (TRACE, Coding with "Enemy",
+Calibration-Family Overfit); the rest are cited from search results and
+abstracts. `RELATED-WORK.md` marks which is which. A lit review that hides
+that distinction is worse than no lit review, and I would rather the file be
+checkable than impressive.
+
+Also: two design choices I was pleased with turn out to be published findings,
+and one escalation design I was pleased with turns out to be the one users
+reject. Cheap lesson for the cost of an hour's searching — and an argument for
+doing the search *before* the fourth iteration rather than after.
