@@ -26,6 +26,7 @@ import shutil
 import subprocess
 import sys
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -555,7 +556,14 @@ def run_reflector(prompt: str, effort: str = "") -> tuple[dict | None, dict]:
         log("claude executable on PATH not found")
         return None, {}
 
+    # Force a session of our own. Claude Code exports CLAUDE_CODE_SESSION_ID,
+    # and a `claude -p` child inherits it — which makes the child attach to
+    # the PARENT's session and append its prompt and answer to the parent's
+    # transcript. The observer would then be writing into the thing it
+    # observes: its own digests come back as user turns on the next pass, and
+    # they land in the transcript the main agent resumes from.
     cmd = [claude, "-p", "--model", MODEL,
+           "--session-id", str(uuid.uuid4()),
            "--output-format", "json",
            "--json-schema", json.dumps(SCHEMA),
            "--append-system-prompt", SYSTEM_PROMPT,
@@ -579,6 +587,11 @@ def run_reflector(prompt: str, effort: str = "") -> tuple[dict | None, dict]:
     env = dict(os.environ)
     env["REFLECTION_DIARY_ACTIVE"] = "1"   # third recursion guard
     env.pop("ANTHROPIC_MODEL", None)
+    # Belt and braces alongside --session-id: strip every variable that pins a
+    # child to the observed session.
+    for var in ("CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_REMOTE_SESSION_ID",
+                "CLAUDE_SESSION_ID", "CLAUDE_CODE_CHILD_SESSION"):
+        env.pop(var, None)
 
     try:
         proc = subprocess.run(

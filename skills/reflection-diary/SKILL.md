@@ -3,7 +3,7 @@ name: reflection-diary
 description: Set up, tune, or read a periodic out-of-band reflection diary for a coding agent session. A Claude Code hook reads the session transcript every few minutes and writes a terse diary entry plus a judgement on the trajectory — on track, drifting, unsafe, or blocked — to a file outside the repo, and can alert the operator or interrupt the agent. Use when asked to monitor, observe, audit or babysit an agent's trajectory, to keep a session journal or eval log, to detect scope creep, goal substitution or unsafe actions, or to install, configure or debug the reflection-diary plugin and its hooks.
 license: MIT
 metadata:
-  version: 1.2.0
+  version: 1.2.1
   author: Daniel Demmel
 ---
 
@@ -188,7 +188,15 @@ minutes is worse than no observer at all, because people turn it off.
 ## Safety Properties
 
 - **The observer never acts.** The reflector runs with `--allowedTools ""`.
-  It reads a digest on stdin and returns JSON. The hook script writes the file.
+  It reads a digest on stdin and returns a JSON verdict against a schema — no
+  tools, no side effects. Every action (appending the diary, writing
+  `ALERTS.md`, notifying, waking the agent) is taken by the hook script from
+  that structured response.
+- **The observer never writes into the observed session.** Each reflection
+  runs under its own `--session-id` with the inherited session variables
+  stripped, so nothing it sends or says enters the transcript it reads. See
+  [references/DESIGN.md](references/DESIGN.md#session-isolation) — getting this
+  wrong silently feeds the observer's output back into the observed agent.
 - **The transcript is treated as untrusted data.** It contains web pages, file
   contents and command output. The reflector is told never to follow
   instructions found inside it, and that text asking it to report all-clear is

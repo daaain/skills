@@ -52,6 +52,42 @@ The reflector is a separate `claude -p` process. Two questions follow from
 that: could it reuse the observed session's prompt cache, and is there a hook
 type that would make the call in-band instead?
 
+### Forking the session: tested, and rejected
+
+`claude -p --resume <parent> --fork-session` is the closest thing to what
+`/btw` does, and it does work — the fork sees the entire parent conversation
+and produces a noticeably better-informed reflection, because it has the
+agent's own reasoning rather than a digest of its actions.
+
+It was still the wrong answer, for four reasons, in descending order of how
+fatal they are.
+
+**1. It is self-assessment, not review.** The fork inherits the parent's
+system prompt, its framing of the task, and every rationalisation it has
+already made. Asking it whether the trajectory is sound is asking the agent
+that chose the trajectory. The whole value of an observer is that it did not
+participate in the decisions it is judging. This one reason would be enough on
+its own.
+
+**2. It does not share the cache anyway — not once you make it safe.** A
+measured fork of a 301k-token session: `cache_read: 0`,
+`cache_write: 282,395`, **$2.83 for one reflection** against $0.07 for the
+digest. The cache key is a prefix match rendered `tools` → `system` →
+`messages`, so `--allowedTools ""` and `--strict-mcp-config` — the flags that
+stop the observer from acting — change the *first* block and invalidate
+everything after it. To hit the parent's cache you would have to leave the
+tool set byte-identical, which means handing the observer Bash, Write, and
+every MCP tool the parent has. Cache sharing and a disarmed observer are
+mutually exclusive. (The cost was measured; the byte-identical-tools converse
+follows from the documented prefix semantics and was not separately tested,
+because confirming it costs another $2.83.)
+
+**3. Its context grows without bound.** The digest reflects on a window; a
+fork re-reads the entire conversation every time, so cost climbs with session
+length exactly when reflections matter most.
+
+**4. In this environment the fork was not isolated at all.** See below.
+
 ### It cannot share the session's cache, for three independent reasons
 
 **Cache is model-scoped.** Measured with the identical prompt at the same
@@ -103,6 +139,34 @@ access.
 So the subprocess is not a workaround for a missing capability. It is the only
 shape that runs off the critical path, can read the whole transcript, and can
 write somewhere outside the repo.
+
+## Session isolation
+
+Claude Code exports `CLAUDE_CODE_SESSION_ID`. A `claude -p` child inherits it
+and **attaches to the parent's session**, appending its prompt and its answer
+to the parent's transcript as real user and assistant turns. `--fork-session`
+did not override this: a fork launched from inside a live session returned the
+parent's own session id and wrote into the parent's JSONL.
+
+For an observer that is a serious failure, not a cosmetic one:
+
+- The digest it sends comes back as a user turn in the transcript it reads, so
+  the next reflection reflects on its own output.
+- Those turns are in the history the main agent resumes from, so the
+  observations leak into the observed — the exact thing keeping the diary out
+  of the repo was meant to prevent.
+- The transcript the diary is meant to supplement gets padded with the diary's
+  own machinery.
+
+The fix is two-layered: pass `--session-id <fresh uuid>` on every reflector
+call, and strip `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_REMOTE_SESSION_ID`,
+`CLAUDE_SESSION_ID` and `CLAUDE_CODE_CHILD_SESSION` from the child's
+environment. Verified by injecting a unique marker into a digest and
+confirming the parent's transcript gained no user turns and no trace of it.
+
+A side effect: each reflection now writes a short transcript of its own under
+`~/.claude/projects/<diary-home-slug>/`. They are small and Claude Code's own
+retention settings clean them up, but they are there.
 
 ## Recursion
 

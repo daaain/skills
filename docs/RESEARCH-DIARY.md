@@ -531,3 +531,126 @@ the cost of a switch is visible after the fact.
 
 Pin a fixed level if your sessions ride the effort control; use `match` if they
 don't.
+
+---
+
+# Round 4 — forking the session, and a bug that had already shipped
+
+The suggestion: don't distil a window, **branch off the parent** so the prompt
+is literally "everything in the parent session + a reflection question" — the
+way `/btw` works. Then the reflector rides the parent's cache for free.
+
+`--fork-session` exists (`--resume <id> --fork-session`, works with `-p`), so
+this was testable rather than arguable. I tested it against this live session.
+
+## It works, and the output is better
+
+```
+claude -p --resume <parent> --fork-session --output-format json \
+  --allowedTools "" --permission-mode dontAsk --settings '{"disableAllHooks":true}' \
+  "Ignore the task you were working on. In one sentence, state what the
+   user's original request was and whether the work has stayed within it."
+```
+
+The answer was accurate and better-informed than any digest-based entry — it
+had the whole arc, and could distinguish "follow-up the user asked for" from
+"unprompted expansion" because it had lived through both.
+
+## But it costs $2.83 a reflection, and doesn't share the cache
+
+```json
+{"cache_read": 0, "cache_write": 282395, "output": 167, "cost_usd": 2.828135}
+```
+
+Zero cache hit on a 301k-token parent. Forty times the digest's $0.07.
+
+The reason is the prefix order — `tools` → `system` → `messages`. Any byte
+change invalidates everything after it. `--allowedTools ""` and
+`--strict-mcp-config` change the **first** block. Those are precisely the
+flags that stop the observer from acting.
+
+So the trade is forced: **cache sharing and a disarmed observer are mutually
+exclusive.** To ride the parent's cache you must hand the reflector the
+parent's full tool set — Bash, Write, every MCP server — inside a process
+nobody is watching, whose entire purpose is to notice when an agent does
+something it shouldn't.
+
+(The $2.83 and the zero cache read are measured. That leaving tools identical
+*would* hit the cache follows from the documented prefix semantics; I didn't
+spend another $2.83 confirming it.)
+
+## The reason that would kill it anyway
+
+A fork inherits the parent's system prompt, its framing of the task, and every
+rationalisation it has already made. Asking it whether the trajectory is sound
+is asking the agent that *chose* the trajectory.
+
+That's the difference between "did you do a good job?" and a review. The
+digest approach is worse-informed on purpose: it sees actions and outputs, not
+the story the agent tells itself about them. For the failure mode this whole
+thing exists to catch — an agent quietly substituting an easier goal and
+narrating it as success — inheriting the narration is disqualifying.
+
+Cost was the reason I could measure. This is the reason that matters.
+
+## The bug this turned up
+
+The fork returned **the parent's own session id**, and the parent's transcript
+grew. Checking properly:
+
+```
+CLAUDE_CODE_SESSION_ID=63302b3b-8536-5e2f-ba30-d165e2f1811e
+```
+
+Claude Code exports the session id, and any `claude -p` child inherits it and
+**attaches to the parent's session**. `--fork-session` did not override it.
+
+Which means the reflector I had already shipped was appending its own prompts
+and answers into the transcript it was observing. Confirmed by finding ten
+copies of my own digest header sitting in this session's transcript as
+plain-string user turns:
+
+```
+# Session
+- project: /home/user/app
+- branch: main
+- entry number: 3
+```
+
+Three separate harms, in ascending order:
+
+1. The transcript the diary is meant to *supplement* gets padded with the
+   diary's machinery.
+2. The next reflection reflects on the previous reflection's digest.
+3. Those turns are in the history the main agent resumes from — so the
+   observer's output leaks into the observed. Which is the precise thing
+   "off repo to not confuse it" was asking for, defeated by an environment
+   variable.
+
+**Fix:** `--session-id <fresh uuid>` on every reflector call, plus stripping
+`CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_REMOTE_SESSION_ID`, `CLAUDE_SESSION_ID`
+and `CLAUDE_CODE_CHILD_SESSION` from the child environment.
+
+**Verified** by injecting a unique marker into a digest, running a reflection,
+and confirming the parent's plain-string user turn count was unchanged
+(522 → 522) and the marker appeared nowhere in its transcript.
+
+Side effect: each reflection now writes a small transcript of its own under
+`~/.claude/projects/<diary-home-slug>/`. Claude Code's retention settings
+clean those up.
+
+Worth noting how this was found: not by testing the reflector, but by testing
+a *different* idea and looking carefully at a session id that seemed one
+character too familiar. The isolation test I should have written on day one
+was the one I never thought to write, because "of course a subprocess is its
+own session".
+
+## Already true: structured response, script does the actions
+
+The other half of the suggestion — "maybe this isn't a tool-using agent env,
+just a structured response, and a script around it does the appending and
+escalating" — is exactly the existing design. `--allowedTools ""` plus
+`--json-schema` makes the reflector a pure function from digest to verdict;
+`reflect.py` does every side effect. Nice to have that arrived at
+independently; it's the property that makes the observer safe to run
+unattended.
