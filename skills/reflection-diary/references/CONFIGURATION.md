@@ -27,6 +27,7 @@ from your shell profile.
 |---|---|---|
 | `REFLECTION_INTERVAL` | `300` | Seconds between reflections. Below ~120 you are paying for windows too thin to show a shape. |
 | `REFLECTION_MIN_LINES` | `4` | Skip the model call when the window has fewer digested lines than this. The clock still advances. |
+| `REFLECTION_MIN_TURNS` | `2` | Skip the model call when fewer assistant turns than this have elapsed. Turns are the better unit — one turn with forty tool calls is one decision, not forty. |
 | `REFLECTION_MAX_WINDOW_LINES` | `400` | Ceiling on digested lines per reflection. Older lines are elided with a marker rather than dropped silently. |
 
 `PreCompact` and `SessionEnd` ignore both the interval and the minimum.
@@ -36,7 +37,8 @@ from your shell profile.
 | Variable | Default | Notes |
 |---|---|---|
 | `REFLECTION_MODEL` | `claude-sonnet-5` | A weaker model gives a weaker judge; this is the main quality lever. |
-| `REFLECTION_TIMEOUT` | `150` | Seconds before the reflector is killed. Observed runs take 20–30s. |
+| `REFLECTION_TIMEOUT` | `150` | Seconds before the reflector is killed. Observed runs take 15–30s. |
+| `REFLECTION_EFFORT` | *(unset)* | `low`…`max`. `low` cuts thinking tokens in the output, the second-largest cost line. Changing it invalidates the reflector's prompt cache, so pick one and stay on it. |
 | `REFLECTION_BARE` | `0` | Use `--bare`. Faster start, but **requires `ANTHROPIC_API_KEY`** — bare mode reads neither OAuth credentials nor the keychain. |
 | `REFLECTION_INCLUDE_THINKING` | `1` | Include thinking text when present. Currently a no-op: Claude Code does not persist it. |
 
@@ -110,6 +112,94 @@ only authority on intent.
 | `REFLECTION_DEBUG` | `0` | Log every decision to stderr. Visible under `claude --debug`. |
 | `REFLECTION_DIARY_ACTIVE` | *(set internally)* | Recursion guard. Do not set by hand. |
 
+## Cost accounting
+
+Every reflection appends a row to `<session>.usage.jsonl`:
+
+```json
+{"ts": "...", "event": "Stop", "entry": 2, "window_lines": 10, "turns": 6,
+ "ok": true, "model": "claude-sonnet-5", "input": 2, "cache_write": 12094,
+ "cache_read": 33925, "output": 1300, "thinking": 797, "cost_usd": 0.073422,
+ "api_ms": 16259, "prompt_chars": 14328}
+```
+
+`review.py --cost` aggregates it, and — because the state file records the
+observed session's transcript path — compares against that session's own token
+totals to give a real overhead percentage.
+
+### Where the money actually goes
+
+Measured on Sonnet 5 with a ten-line window:
+
+| Component | Tokens | Share of cost |
+|---|---|---|
+| Harness (system prompt + tool definitions), cached read | ~34,000 | ~10% |
+| Rubric + digest, written to 1h cache every call | ~12,000 | ~67% |
+| Output, including thinking | ~1,200 | ~18% |
+
+The counter-intuitive part: the 34k of Claude Code harness you cannot get rid
+of is *cheap*, because it is a stable prefix that caches at ~$0.20/MTok. The
+expensive part is the small, varying tail, because it is written to cache at
+2× input price on every call and never read back — no two reflections share a
+prompt.
+
+Practical consequences:
+
+- **A shorter interval is not proportionally more expensive.** Half the
+  interval means half the window, so the dominant cache-write term barely
+  moves. Don't stretch the interval purely to save money.
+- **`REFLECTION_EFFORT=low` is a real saving** — output is ~18% of the bill and
+  most of it is thinking tokens.
+- **`REFLECTION_MODEL` matters most**, since every term above scales with the
+  model's input and output price.
+
+### Getting the harness out of the prompt
+
+Only `--bare` removes the tool definitions (`REFLECTION_BARE=1`), and it needs
+`ANTHROPIC_API_KEY` — bare mode reads neither OAuth credentials nor the
+keychain, so on a subscription it fails with an authentication error.
+
+`--system-prompt` combined with `--exclude-dynamic-system-prompt-sections`
+trims about 12% (41.5k → 36.5k tokens). Since the harness is the cheap part,
+this is rarely worth the loss of the default system prompt.
+
+### Verifying the cache is working
+
+`cache hit rate` in `--cost` is `cache_read / (cache_read + cache_write +
+input)`. Expect roughly 70–75% steady state. If it collapses toward zero,
+something is invalidating the prefix — most likely a changed
+`REFLECTION_MODEL` or `REFLECTION_EFFORT`, or a gap longer than the cache TTL.
+
+## Thinking
+
+The reflector cannot read the observed agent's reasoning: Claude Code writes a
+thinking block's `signature` to the transcript but leaves `thinking` empty.
+
+Settings that control thinking in the observed session:
+
+| Setting | Where | Effect |
+|---|---|---|
+| `alwaysThinkingEnabled` | `settings.json` | Extended thinking on or off for every session. |
+| `showThinkingSummaries` | `settings.json` | Show summaries rather than a collapsed stub. |
+| `MAX_THINKING_TOKENS` | env var | `0` disables; a positive value enables even where thinking is off. Takes precedence over the setting. |
+| `--thinking disabled` | CLI flag | Per-run override. |
+
+These govern whether thinking *happens* and whether the UI *displays* it.
+Whether any of them causes the text to be **persisted to the JSONL** is a
+separate question, and on the version tested here it was empty regardless.
+Check your own with:
+
+```bash
+jq -r 'select(.type=="assistant") | .message.content[]?
+  | select(.type=="thinking") | (.thinking|length)' \
+  ~/.claude/projects/<slug>/<session>.jsonl | sort -u
+```
+
+All zeros means the text is not persisted and `REFLECTION_INCLUDE_THINKING`
+has nothing to work with. A non-zero length means it is available, and the
+digest will start including it (truncated to
+`REFLECTION_TRUNC_THINKING`) with no other change.
+
 ## Recipes
 
 **Unattended / overnight runs** — tighter cadence, wake on alert:
@@ -132,12 +222,14 @@ only authority on intent.
 }}
 ```
 
-**Cheap background journal**:
+**Cheap background journal** — model and effort are the levers that matter,
+not the interval:
 
 ```json
 {"env": {
-  "REFLECTION_INTERVAL": "900",
-  "REFLECTION_MODEL": "claude-haiku-4-5-20251001"
+  "REFLECTION_INTERVAL": "600",
+  "REFLECTION_MODEL": "claude-haiku-4-5",
+  "REFLECTION_EFFORT": "low"
 }}
 ```
 
@@ -152,7 +244,7 @@ REFLECTION_DEBUG=1 claude --debug
 | Symptom | Cause |
 |---|---|
 | `throttled (Ns < Ms)` | Normal. This is the mechanism working. |
-| `window too thin` | Fewer than `REFLECTION_MIN_LINES` digested lines. |
+| `window too thin (N lines, M turns)` | Below `REFLECTION_MIN_LINES` or `REFLECTION_MIN_TURNS`. |
 | `re-entrant invocation` | The reflector's own child tried to reflect. Guard working. |
 | `another reflection in flight` | Lock held. Stale locks break after 15 minutes. |
 | `claude executable not on PATH` | Hooks run with a minimal environment; use an absolute path or fix `PATH`. |

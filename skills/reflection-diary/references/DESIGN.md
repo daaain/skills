@@ -25,6 +25,15 @@ that is precisely the session you most want watched. Hence the `PostToolUse`
 tick. It shares one throttle file, so on the overwhelming majority of tool
 calls the hook costs one `stat()` and an interpreter start, then exits 0.
 
+### How thin is too thin
+
+Two gates, both cheap, both before any model call: `REFLECTION_MIN_LINES` on
+digested lines and `REFLECTION_MIN_TURNS` on assistant turns. Turns are the
+better unit — a single turn firing forty tool calls is one decision, not
+forty — but lines catch the case where turns are many and empty. When a window
+fails either gate the clock advances but **the cursor does not**, so the lines
+roll into the next window rather than going unobserved.
+
 ### Forced events
 
 `PreCompact` and `SessionEnd` bypass the throttle. In both cases the window is
@@ -102,7 +111,10 @@ talked round by a persuasive one. It matches how the Hugging Face incident was
 actually reconstructed, from commands rather than from thoughts.
 
 If a future version persists thinking text, `REFLECTION_INCLUDE_THINKING=1`
-(already the default) starts using it with no other change.
+(already the default) starts using it with no other change. The per-window
+count of redacted blocks goes into the usage ledger, so it is visible if that
+ever changes. `CONFIGURATION.md` has the thinking settings and a one-liner for
+checking whether your own transcripts carry the text.
 
 ## The observer never acts
 
@@ -168,8 +180,9 @@ it is watching. Specifically:
   sees the summary, not the work.
 - **The judge is a model.** It will occasionally miss things and occasionally
   cry wolf. It is a smoke alarm, not a proof.
-- **Cost is real.** Roughly 12 model calls an hour of active work at the
-  default interval. Idle sessions cost nothing.
+- **Cost is real** but now measured rather than guessed — see
+  [CONFIGURATION.md](CONFIGURATION.md#cost-accounting). Roughly 12 calls an
+  hour of active work at the default interval; idle sessions cost nothing.
 - **`asyncRewake` wakes, it does not block.** The main agent receives the alert
   and is told to stop; it is not prevented from continuing. For a hard stop you
   want a `PreToolUse` deny rule, which is a different tool for a different job.

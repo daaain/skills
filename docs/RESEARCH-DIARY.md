@@ -288,3 +288,137 @@ Roughly in order of how much I'd want them:
   one summary. The observer sees the summary, not the work.
 - 5 minutes is a guess. The right interval is probably "however long it takes
   to do something you'd regret", which is task-dependent.
+
+---
+
+# Round 2 — cost telemetry and thinking
+
+## The question
+
+Does the observer actually ride the prompt cache, and does it stay under "a
+few percent" of the session? The hypothesis going in was that a reflection
+should be "the concise prompt as uncached input tokens plus the terse output".
+
+## Response headers aren't the way in — and don't need to be
+
+The CLI never exposes response headers. It exposes something better:
+`claude -p --output-format json` returns a full `usage` object plus
+`total_cost_usd` and a per-model breakdown.
+
+```json
+{"usage": {"input_tokens": 2, "cache_creation_input_tokens": 12094,
+           "cache_read_input_tokens": 33925, "output_tokens": 1300,
+           "output_tokens_details": {"thinking_tokens": 797},
+           "cache_creation": {"ephemeral_1h_input_tokens": 12094,
+                              "ephemeral_5m_input_tokens": 0}},
+ "total_cost_usd": 0.073422, "duration_api_ms": 16259}
+```
+
+`cache_read_input_tokens` is exactly the number the question was about, and
+the 1h/5m split tells you which TTL you're being billed at. Every reflection
+now appends this to `<session>.usage.jsonl`; `review.py --cost` aggregates it.
+
+## The hypothesis was wrong twice, in opposite directions
+
+### The prompt is a small minority of what gets sent
+
+A reflection's own prompt is ~1–4k tokens. A `claude -p` call ships **41,513
+tokens** on top of it — the Claude Code system prompt plus tool definitions.
+`--allowedTools ""` does not remove the tool schemas.
+
+Measured alternatives:
+
+| Configuration | Prefix tokens | Note |
+|---|---|---|
+| default + `--append-system-prompt` | 41,513 | current |
+| `--system-prompt` (full replace) | 36,458 | −12%; the 36k is tool definitions |
+| `+ --exclude-dynamic-system-prompt-sections` | 36,451 | no further gain |
+| `--bare` | — | fails: no OAuth or keychain in bare mode |
+
+So the floor without an API key is ~36k tokens per call. The system prompt was
+never the bulk; the tool definitions are.
+
+### But the harness is the *cheap* part
+
+This is the finding I did not expect. Steady state on Sonnet 5, ten-line
+window:
+
+| Component | Tokens | Share of cost |
+|---|---|---|
+| Harness, cached read | ~34,000 | ~10% |
+| Rubric + digest, cache **write** | ~12,000 | **~67%** |
+| Output incl. thinking | ~1,200 | ~18% |
+
+The 34k of harness is a stable prefix, so it caches and bills at ~$0.20/MTok.
+The small varying tail gets written to a 1-hour cache at 2× input price on
+every call and is **never read back** — no two reflections share a prompt.
+
+$0.072 per reflection, and two thirds of it is paying to cache something that
+will never be reused.
+
+### A measurement trap I nearly published
+
+My first A/B runs showed `cache_read: 41513, cache_write: 0` and $0.011 per
+call, and I nearly reported that as the steady-state figure. It was an
+artefact of sending the *identical* prompt twice. Real reflections never
+repeat a prompt, so they always pay the write. The honest number is the
+$0.072 from the ledger, not the $0.011 from the A/B.
+
+Lesson: benchmark with the input actually varying, or you measure your own
+test harness.
+
+## The answer to the original question
+
+```
+  reflections     2
+  cache hit rate  73.8% of billed input tokens
+  observed session 220 turns · 33,019,447 input tokens · 271,667 out
+  input overhead  0.28% (91,986 / 33,019,447 input tokens)
+```
+
+Two reflections over a 220-turn session: 0.28% of input tokens. At a realistic
+cadence (~12 over that span) it lands around 1.7%. So "a few percent" was
+right — but for a different reason than assumed. The reflector's prompt isn't
+small relative to what it sends; it's that the observed session is
+*enormous* by comparison.
+
+Cache hit rate steady-states around 74%, not the ~100% the framing implied,
+because the varying tail is counted as a write.
+
+## Levers, now evidence-backed
+
+1. `REFLECTION_MODEL` — everything scales with it.
+2. `REFLECTION_EFFORT=low` — output is ~18% of the bill, mostly thinking.
+3. **Not** a longer interval. Half the interval means half the window, so the
+   dominant cache-write term barely moves. Stretching the interval buys much
+   less than it looks like it should, and costs coverage.
+
+Changing model or effort invalidates the reflector's cache prefix, so pick one
+and stay on it.
+
+## Thinking settings
+
+The settings that govern thinking in the observed session:
+
+| Setting | Where | Effect |
+|---|---|---|
+| `alwaysThinkingEnabled` | `settings.json` | On/off for every session |
+| `showThinkingSummaries` | `settings.json` | Summaries vs a collapsed stub |
+| `MAX_THINKING_TOKENS` | env var | `0` disables, positive enables; takes precedence |
+| `--thinking disabled` | CLI flag | Per-run override |
+
+Caveat I could not resolve: these control whether thinking *happens* and
+whether the UI *displays* it. Whether any of them makes Claude Code write the
+text into the JSONL is a separate question, and on 2.1.251 here it stayed
+empty regardless. `CONFIGURATION.md` now carries a jq one-liner to check on a
+given machine; if the text ever appears, `REFLECTION_INCLUDE_THINKING` picks
+it up with no code change, and the ledger records the redacted-block count so
+the transition is visible.
+
+## Turn-based gating
+
+Added `REFLECTION_MIN_TURNS` (default 2) alongside the existing line
+threshold. Turns are the better unit: one turn firing forty tool calls is one
+decision, not forty. Both gates run before any model call, and when a window
+fails either one the clock advances but the cursor does not, so those lines
+roll into the next window instead of going unobserved.

@@ -61,11 +61,18 @@ INTERVAL = env_int("REFLECTION_INTERVAL", 300)
 # Don't burn a model call on a window with nothing in it.
 MIN_LINES = env_int("REFLECTION_MIN_LINES", 4)
 
+# Turns are a better unit than lines for "has enough happened yet": one turn
+# with forty tool calls is one decision, forty lines is not forty decisions.
+MIN_TURNS = env_int("REFLECTION_MIN_TURNS", 2)
+
 # Hard ceiling on how much transcript goes into one reflection. If the agent
 # has been busy, we keep the newest lines and say so.
 MAX_WINDOW_LINES = env_int("REFLECTION_MAX_WINDOW_LINES", 400)
 
 MODEL = env_str("REFLECTION_MODEL", "claude-sonnet-5")
+# Left unset by default. Note that changing it invalidates the reflector's
+# prompt cache, so pick one and stay on it.
+EFFORT = env_str("REFLECTION_EFFORT", "")
 DIARY_HOME = Path(
     env_str("REFLECTION_DIARY_HOME", str(Path.home() / ".claude" / "reflection-diary"))
 ).expanduser()
@@ -268,27 +275,31 @@ def digest_line(raw: str) -> tuple[str, list[str], int]:
     return "assistant", out, redacted
 
 
-def read_window(transcript: Path, cursor: int) -> tuple[list[str], int, int, int]:
+def read_window(transcript: Path, cursor: int) -> tuple[list[str], int, int, dict]:
     """Digest transcript lines from `cursor` onwards.
 
-    Returns (rendered lines, new cursor, raw lines consumed, redacted thinking
-    blocks seen).
+    Returns (rendered lines, new cursor, raw lines consumed, stats) where
+    stats carries the assistant-turn count and the number of thinking blocks
+    whose text Claude Code did not persist.
     """
     rendered: list[str] = []
     consumed = 0
     redacted = 0
+    turns = 0
     try:
         with transcript.open("r", encoding="utf-8", errors="replace") as fh:
             for index, raw in enumerate(fh):
                 if index < cursor:
                     continue
                 consumed += 1
-                _role, lines, hidden = digest_line(raw)
+                role, lines, hidden = digest_line(raw)
                 redacted += hidden
+                if role == "assistant" and lines:
+                    turns += 1
                 rendered.extend(lines)
     except OSError as exc:
         log(f"cannot read transcript: {exc}")
-        return [], cursor, 0, 0
+        return [], cursor, 0, {"turns": 0, "redacted_thinking": 0}
 
     new_cursor = cursor + consumed
     if len(rendered) > MAX_WINDOW_LINES:
@@ -296,7 +307,7 @@ def read_window(transcript: Path, cursor: int) -> tuple[list[str], int, int, int
         rendered = [
             f"[{dropped} earlier lines in this window elided — the agent was busy]"
         ] + rendered[-MAX_WINDOW_LINES:]
-    return rendered, new_cursor, consumed, redacted
+    return rendered, new_cursor, consumed, {"turns": turns, "redacted_thinking": redacted}
 
 
 def collect_asks(transcript: Path, keep_first: int = 2, keep_last: int = 4) -> list[str]:
@@ -520,11 +531,17 @@ def build_prompt(meta: dict, asks: list[str], recent: list[str], window: list[st
     return "\n".join(parts)
 
 
-def run_reflector(prompt: str) -> dict | None:
+def run_reflector(prompt: str) -> tuple[dict | None, dict]:
+    """Run the reflector. Returns (verdict, usage).
+
+    `usage` is always populated when the call completed, even if the verdict
+    could not be parsed — a failed reflection still costs money and should
+    still show up in the ledger.
+    """
     claude = shutil.which("claude")
     if not claude:
-        log("claude executable not on PATH")
-        return None
+        log("claude executable on PATH not found")
+        return None, {}
 
     cmd = [claude, "-p", "--model", MODEL,
            "--output-format", "json",
@@ -533,6 +550,9 @@ def run_reflector(prompt: str) -> dict | None:
            "--allowedTools", "",
            "--permission-mode", "dontAsk",
            "--strict-mcp-config"]
+
+    if EFFORT:
+        cmd += ["--effort", EFFORT]
 
     if USE_BARE:
         # Faster start and skips hook discovery outright, but bare mode reads
@@ -556,30 +576,54 @@ def run_reflector(prompt: str) -> dict | None:
         )
     except subprocess.TimeoutExpired:
         log("reflector timed out")
-        return None
+        return None, {}
     except OSError as exc:
         log(f"reflector failed to start: {exc}")
-        return None
+        return None, {}
 
     if proc.returncode != 0:
         log(f"reflector exit {proc.returncode}: {proc.stderr[:400]}")
-        return None
+        return None, {}
 
     try:
         payload = json.loads(proc.stdout)
     except ValueError:
         log(f"reflector output not JSON: {proc.stdout[:300]}")
-        return None
+        return None, {}
+
+    usage = extract_usage(payload, len(prompt))
 
     verdict = payload.get("structured_output")
     if isinstance(verdict, dict):
-        return verdict
+        return verdict, usage
     # Fallback for versions without --json-schema support.
     try:
-        return json.loads(payload.get("result", ""))
+        return json.loads(payload.get("result", "")), usage
     except ValueError:
         log("no structured output in reflector response")
-        return None
+        return None, usage
+
+
+def extract_usage(payload: dict, prompt_chars: int) -> dict:
+    """Pull the token and cost accounting out of a `-p --output-format json` run.
+
+    The CLI reports this directly, which is more than the raw response headers
+    would give us: `cache_read_input_tokens` is the number that answers "is
+    this thing actually riding the cache?".
+    """
+    usage = payload.get("usage") or {}
+    details = usage.get("output_tokens_details") or {}
+    return {
+        "model": MODEL,
+        "input": usage.get("input_tokens", 0),
+        "cache_write": usage.get("cache_creation_input_tokens", 0),
+        "cache_read": usage.get("cache_read_input_tokens", 0),
+        "output": usage.get("output_tokens", 0),
+        "thinking": details.get("thinking_tokens", 0),
+        "cost_usd": payload.get("total_cost_usd", 0),
+        "api_ms": payload.get("duration_api_ms", 0),
+        "prompt_chars": prompt_chars,
+    }
 
 
 # --------------------------------------------------------------------------
@@ -712,6 +756,15 @@ def tail_entries(diary: Path, count: int = 3) -> list[str]:
     return [f"- {h}" for h in heads[-count:]]
 
 
+def record_usage(ledger: Path, row: dict) -> None:
+    """Append one line of token accounting. Never fails the reflection."""
+    try:
+        with ledger.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row) + "\n")
+    except OSError as exc:
+        log(f"cannot write usage ledger: {exc}")
+
+
 def raise_alert(verdict: dict, meta: dict, diary: Path, alerts: Path) -> None:
     severity = verdict.get("severity", "ok")
     stamp = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M")
@@ -812,6 +865,7 @@ def main() -> int:
 
     state_path = diary_dir / f"{slugify(session_id)}.state.json"
     diary_path = diary_dir / f"{slugify(session_id)}.md"
+    ledger_path = diary_dir / f"{slugify(session_id)}.usage.jsonl"
     alerts_path = DIARY_HOME / "ALERTS.md"
     lock_dir = diary_dir / f"{slugify(session_id)}.lock"
 
@@ -831,23 +885,25 @@ def main() -> int:
         die("another reflection in flight")
 
     try:
-        window, new_cursor, consumed, redacted = read_window(transcript, cursor)
+        window, new_cursor, consumed, stats = read_window(transcript, cursor)
 
         if event_name == "SessionStart":
             # Open the diary and record the ask; don't spend a model call yet.
             ensure_header(diary_path, {"cwd": cwd, "session_id": session_id,
                                        "git_branch": event.get("git_branch")},
                           collect_asks(transcript))
-            state.update(cursor=new_cursor, last_run=now)
+            state.update(cursor=new_cursor, last_run=now,
+                         transcript=str(transcript))
             save_state(state_path, state)
             return 0
 
-        if consumed == 0 or (not forced and len(window) < MIN_LINES):
+        thin = len(window) < MIN_LINES or stats["turns"] < MIN_TURNS
+        if consumed == 0 or (not forced and thin):
             # Nothing worth a model call. Advance the clock so we don't retry
             # on every turn, but leave the cursor so the lines are not lost.
             state["last_run"] = now
             save_state(state_path, state)
-            die(f"window too thin ({len(window)} lines)")
+            die(f"window too thin ({len(window)} lines, {stats['turns']} turns)")
 
         asks = collect_asks(transcript)
         entry_number = int(state.get("entries", 0)) + 1
@@ -861,12 +917,24 @@ def main() -> int:
             "gap_minutes": gap,
             "from_line": cursor + 1,
             "to_line": new_cursor,
-            "redacted_thinking": redacted,
+            "redacted_thinking": stats["redacted_thinking"],
+            "turns": stats["turns"],
         }
 
         ensure_header(diary_path, meta, asks)
         prompt = build_prompt(meta, asks, tail_entries(diary_path), window)
-        verdict = run_reflector(prompt)
+        verdict, usage = run_reflector(prompt)
+
+        if usage:
+            record_usage(ledger_path, {
+                "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "event": event_name,
+                "entry": entry_number,
+                "window_lines": len(window),
+                "turns": stats["turns"],
+                "ok": verdict is not None,
+                **usage,
+            })
 
         if verdict is None:
             # Leave the cursor untouched so this window rolls into the next
@@ -886,6 +954,7 @@ def main() -> int:
             last_run=now,
             entries=entry_number,
             last_severity=severity,
+            transcript=str(transcript),
         )
         save_state(state_path, state)
 

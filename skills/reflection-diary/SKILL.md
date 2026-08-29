@@ -3,7 +3,7 @@ name: reflection-diary
 description: Set up, tune, or read a periodic out-of-band reflection diary for a coding agent session. A Claude Code hook reads the session transcript every few minutes and writes a terse diary entry plus a judgement on the trajectory — on track, drifting, unsafe, or blocked — to a file outside the repo, and can alert the operator or interrupt the agent. Use when asked to monitor, observe, audit or babysit an agent's trajectory, to keep a session journal or eval log, to detect scope creep, goal substitution or unsafe actions, or to install, configure or debug the reflection-diary plugin and its hooks.
 license: MIT
 metadata:
-  version: 1.0.0
+  version: 1.1.0
   author: Daniel Demmel
 ---
 
@@ -112,6 +112,7 @@ Everything is environment variables, so it can be set per-project in
 | `REFLECTION_WAKE_ON_ALERT` | `0` | Opt in to interrupting the main agent on an `alert`. |
 | `REFLECTION_ALERT_CMD` | *(unset)* | Shell command for `concern`+ alerts. Gets `REFLECTION_SEVERITY`, `_SUMMARY`, `_KINDS`, `_SESSION`, `_PROJECT`, `_DIARY`. |
 | `REFLECTION_MIN_LINES` | `4` | Skip the model call if the window is thinner than this. |
+| `REFLECTION_MIN_TURNS` | `2` | Skip the model call if fewer agent turns than this have elapsed. |
 | `REFLECTION_DISABLED` | `0` | Kill switch. |
 | `REFLECTION_DEBUG` | `0` | Log decisions to stderr (visible in `claude --debug`). |
 
@@ -124,6 +125,7 @@ The rest — truncation limits, window ceiling, timeout, `--bare` mode — are i
 python3 scripts/review.py              # recent entries across all projects
 python3 scripts/review.py --alerts     # only concern and alert entries
 python3 scripts/review.py --project .  # this project only
+python3 scripts/review.py --cost       # what the observer cost, and cache hit rate
 ```
 
 An entry looks like this:
@@ -192,13 +194,42 @@ minutes is worse than no observer at all, because people turn it off.
   outputs only. The reflector is told this explicitly so it does not invent
   intent it cannot evidence.
 
-## Costs
+## Costs, Measured
 
-One reflection is roughly the digested window (typically 1–4k tokens) plus the
-rubric. At the 5-minute default that is around 12 calls an hour of active
-work, and the throttle means an idle session costs nothing. Lower the cost by
-raising `REFLECTION_INTERVAL`, or by pointing `REFLECTION_MODEL` at a smaller
-model — at the price of a weaker judge.
+Every reflection appends a row to `<session>.usage.jsonl` with the token
+counts and dollar cost the CLI reports. `review.py --cost` aggregates it:
+
+```
+  reflections     2
+  cost            $0.1452   ($0.0726 per reflection)
+  cache hit rate  73.8% of billed input tokens
+  tokens          67,850 cached read · 24,132 cache write · 4 fresh in · 2,466 out
+  observed session 220 turns · 33,019,447 input tokens · 271,667 out
+  input overhead  0.28% (91,986 / 33,019,447 input tokens)
+```
+
+Two things that surprise people, both measured rather than assumed:
+
+**The digest is a small minority of what gets sent.** A reflection's own
+prompt is ~1–4k tokens, but `claude -p` also ships the Claude Code system
+prompt and tool definitions — about 36k tokens, of which the tool schemas are
+the bulk. `--allowedTools ""` does not remove them; only `--bare` does, and
+`--bare` cannot use subscription auth.
+
+**Cost is dominated by cache writes, not by that harness.** The harness is a
+stable prefix and rides the cache at ~$0.20/MTok. The varying tail — rubric
+plus digest — is written to a 1-hour cache on every call at 2× input price and
+never read back, because no two reflections share a prompt. On Sonnet 5 that
+is roughly two thirds of the bill.
+
+So the useful levers are, in order: a smaller window (a *shorter* interval can
+be cheaper per unit of work than a long one), a cheaper `REFLECTION_MODEL`,
+and `REFLECTION_EFFORT=low` to cut thinking tokens in the output.
+
+Against a real session the overhead still lands where you would hope — low
+single-digit percent of input tokens — because the observed session is
+enormous by comparison. But measure your own with `--cost` rather than trusting
+that.
 
 ## Further Reading
 
