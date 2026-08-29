@@ -6,7 +6,7 @@
   },
   "metadata": {
     "description": "Skills for Agents from daaain",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "repository": "https://github.com/daaain/skills"
   },
   "plugins": [
@@ -16,7 +16,22 @@
       "source": "./",
       "strict": false,
       "skills": [
-        "./skills/devcontainer-security"
+        "./skills/devcontainer-security",
+        "./skills/reflection-diary"
+      ]
+    },
+    {
+      "name": "reflection-diary",
+      "description": "Periodically reads the session transcript out of band and writes a terse diary entry plus a judgement on the agent's trajectory. Installs hooks.",
+      "source": "./skills/reflection-diary",
+      "strict": true,
+      "category": "observability",
+      "keywords": [
+        "observability",
+        "safety",
+        "oversight",
+        "eval",
+        "hooks"
       ]
     }
   ]

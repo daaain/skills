@@ -1,0 +1,68 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/reflect.py\"",
+            "async": true,
+            "timeout": 120,
+            "statusMessage": "Opening reflection diary..."
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/reflect.py\"",
+            "asyncRewake": true,
+            "timeout": 180,
+            "statusMessage": "Reflecting..."
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/reflect.py\"",
+            "asyncRewake": true,
+            "timeout": 180,
+            "statusMessage": "Reflecting..."
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/reflect.py\"",
+            "async": true,
+            "timeout": 180,
+            "statusMessage": "Checkpointing reflection diary..."
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/reflect.py\"",
+            "timeout": 180,
+            "statusMessage": "Closing reflection diary..."
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -14,6 +14,7 @@ Skills are markdown files that give AI agents specialised knowledge and workflow
 | Skill | Description |
 |-------|-------------|
 | [devcontainer-security](skills/devcontainer-security/) | Guide for setting up secured VS Code dev containers for coding agents. Use when creating or hardening a DevContainer to... |
+| [reflection-diary](skills/reflection-diary/) | Set up, tune, or read a periodic out-of-band reflection diary for a coding agent session. A Claude Code hook reads the... |
 <!-- SKILLS:END -->
 
 ## Installation
@@ -46,6 +47,17 @@ Install via Claude Code's built-in plugin system:
 # Install all skills
 /plugin install skills
 ```
+
+#### Skills that install hooks
+
+Most skills here are documentation an agent reads. `reflection-diary` also
+ships hooks, so it is a separate plugin you install deliberately:
+
+```bash
+/plugin install reflection-diary@skills
+```
+
+Installing `skills` gives you its documentation without turning the hooks on.
 
 ### Option 3: Clone and Copy
 
