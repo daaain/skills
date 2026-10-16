@@ -18,6 +18,11 @@
       "skills": [
         "./skills/devcontainer-security"
       ]
+    },
+    {
+      "name": "pin-board",
+      "description": "Mod that pins questions and summaries from background-woken turns above the prompt so they don't scroll away",
+      "source": "./mods/pin-board"
     }
   ]
 }

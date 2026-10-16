@@ -1,0 +1,18 @@
+{
+  "name": "pin-board",
+  "version": "0.1.0",
+  "description": "Pins questions and summaries from background-woken turns above the prompt so they don't scroll away.",
+  "author": {
+    "name": "Daniel Demmel"
+  },
+  "license": "MIT",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "numberQuestions": {
+      "type": "boolean",
+      "title": "Number Claude's questions",
+      "description": "Ask Claude, in a one-line system prompt section, to number several questions so you can answer by number and it can pin the ones left open.",
+      "default": true
+    }
+  }
+}
