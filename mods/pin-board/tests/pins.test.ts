@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { asksQuestion, autoPinFor, hasText, isBackgroundOrigin, parsePinsCommand, preview } from '../hooks/pins'
+import { asksQuestion, autoPinFor, findQuoted, isBackgroundOrigin, parsePinsCommand, preview, textOf } from '../hooks/pins'
 
 describe('isBackgroundOrigin', () => {
   test('the person typing, on any client, is not a background wake', () => {
@@ -88,11 +88,29 @@ describe('parsePinsCommand', () => {
   })
 })
 
-describe('hasText', () => {
-  test('true only for content holding a non-empty text block', () => {
-    expect(hasText([{ type: 'text', text: 'hi' }])).toBe(true)
-    expect(hasText([{ type: 'text', text: ' ' }, { type: 'tool_use', id: 'x' }])).toBe(false)
-    expect(hasText('plain')).toBe(true)
-    expect(hasText(undefined)).toBe(false)
+describe('textOf', () => {
+  test('joins text blocks and skips the rest', () => {
+    expect(textOf([{ type: 'text', text: 'one' }, { type: 'tool_use', id: 'x' }, { type: 'text', text: 'two' }])).toBe('one\ntwo')
+    expect(textOf('plain')).toBe('plain')
+    expect(textOf(undefined)).toBe('')
+  })
+})
+
+describe('findQuoted', () => {
+  const rows = [
+    { uuid: 'old', text: '1. Rename the helper?\n2. Should we **keep** the   v1 endpoint?' },
+    { uuid: 'mid', text: 'Done with the refactor.' },
+    { uuid: 'new', text: 'Should we keep the v1 endpoint? Asking again.' },
+  ]
+
+  test('finds the newest reply holding the quote, ignoring case, spacing and emphasis', () => {
+    expect(findQuoted(rows, 'should we KEEP the v1\nendpoint')).toBe('new')
+    expect(findQuoted(rows, 'Rename the helper')).toBe('old')
+  })
+
+  test('answers undefined when nothing holds it, or the quote is too short to trust', () => {
+    expect(findQuoted(rows, 'drop the database')).toBeUndefined()
+    expect(findQuoted(rows, 'the')).toBeUndefined()
+    expect(findQuoted(rows, '   ')).toBeUndefined()
   })
 })

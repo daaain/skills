@@ -49,20 +49,40 @@ const PR_WATCH = {
   },
 } satisfies Plugin
 
+// Reads pin-board's pins out of session state, so a test can check each pin's anchor:
+// the test kit can't resolve a plugin's scroll to a transcript row.
+const PEEK = {
+  name: 'peek',
+  register(on) {
+    on('session.start', async ($, e, next) => {
+      await $.command.register({ name: 'peek', description: "Print pin-board's pins as JSON" })
+      return next(e)
+    })
+    on('command.run', { command: 'peek' }, async $ => {
+      const { value } = await $.state.get({ plugin: 'pin-board', key: 'pins' })
+      return { text: JSON.stringify(value ?? []) }
+    })
+  },
+} satisfies Plugin
+
 // What the host saw the mod do, for assertions.
 type Seen = {
   contexts: (readonly string[] | undefined)[]
   opened: string[]
   isPaneUp: boolean
+  toolDescription: string
 }
 
 // The engine's bottom of each chain the mods reach, standing in for a session.
 const setup = async ($: Engine, on: On): Promise<Seen> => {
-  const seen: Seen = { contexts: [], opened: [], isPaneUp: false }
+  const seen: Seen = { contexts: [], opened: [], isPaneUp: false, toolDescription: '' }
 
   mock.clock(on, { now: Date.UTC(2026, 9, 16, 9, 30) })
   on('session.start', ($, e) => ({ cwd: e.cwd }))
-  on('tool.register', ($, e) => ({ value: { tool: `mcp__pin-board__${e.name}` } }))
+  on('tool.register', ($, e) => {
+    seen.toolDescription = e.description
+    return { value: { tool: `mcp__pin-board__${e.name}` } }
+  })
   on('command.register', ($, e) => ({ value: { command: e.name } }))
   on('prompt.submit', ($, e) => {
     seen.contexts.push(e.context)
@@ -99,8 +119,18 @@ const command = ($: Engine, name: string, args = '') =>
 const complete = ($: Engine, turnId: string, answer: string) =>
   $.turn.complete({ answer, reason: 'answer', durationMs: 10, isAborted: false, turnId })
 
-const pin = ($: Engine, id: string, text: string, kind?: string) =>
-  $.tool.call({ tool: PIN_TOOL, tool_use_id: id, text, kind } as Parameters<Engine['tool']['call']>[0])
+type PinInput = { text: string; kind?: string; quote?: string; replaces?: string }
+
+const pinWith = async ($: Engine, id: string, input: PinInput) => {
+  const answer = await $.tool.call({ tool: PIN_TOOL, tool_use_id: id, ...input } as Parameters<Engine['tool']['call']>[0])
+  return answer as { result?: string; deny?: string }
+}
+
+const pin = ($: Engine, id: string, text: string, kind?: string) => pinWith($, id, { text, kind })
+
+type Peeked = { text: string; claudeId?: string; anchor?: { row: string; block: string } }
+
+const peek = async ($: Engine): Promise<Peeked[]> => JSON.parse((await command($, 'peek')).text ?? '[]')
 
 // The person pressing Enter at the prompt.
 const typed = ($: Engine, text: string) => $.prompt.submit({ text, origin: { kind: 'composer' }, wait: false })
@@ -290,11 +320,12 @@ test("Claude's pin offers a jump in fullscreen only", async ($, on) => {
   expect(await jumps({ columns: 100, rows: 40, isFullscreen: true })).toHaveLength(1)
 })
 
-test("an automatic pin anchors to the answer's message", { plugins: [PR_WATCH] }, async ($, on) => {
+test("an automatic pin anchors to the top of the answer's message", { plugins: [PR_WATCH, PEEK] }, async ($, on) => {
   await setup($, on)
 
   await wakeTurn($, 't1', 'CI failed on lint. Fix it?')
 
+  expect((await peek($))[0]?.anchor).toEqual({ row: 'msg-t1', block: 'start' })
   expect((await command($, 'pins', 'go 1')).text).not.toContain('no place in the transcript')
 })
 
@@ -338,4 +369,83 @@ test('the pin tool runs without a permission prompt, unless the person denied it
 
   verdict = 'deny'
   expect((await $.tool.check({ tool: PIN_TOOL, input: { text: 'hi' } })).decision).toBe('deny')
+})
+
+test('the always-sent description covers parking unanswered questions', async ($, on) => {
+  const seen = await setup($, on)
+
+  expect(seen.toolDescription).toContain("hasn't answered")
+})
+
+test("a pin without a quote jumps to its own call, shown at the bottom of the screen", { plugins: [PEEK] }, async ($, on) => {
+  await setup($, on)
+
+  await pin($, 'u1', 'Still open: Q2 and Q4')
+
+  expect((await peek($))[0]?.anchor).toEqual({ row: 'u1', block: 'end' })
+})
+
+test('a quote anchors the pin to the top of the earlier reply it came from', { plugins: [PEEK] }, async ($, on) => {
+  await setup($, on)
+  await reply($, 'msg-a', '1. Rename the helper?\n2. Should we **keep** the v1 endpoint?')
+  await reply($, 'msg-b', 'Renamed it.')
+
+  const answer = await pinWith($, 'u1', { text: 'Still open: Q2', quote: 'should we keep the v1 endpoint' })
+
+  expect((await peek($))[0]?.anchor).toEqual({ row: 'msg-a', block: 'start' })
+  expect(answer.result).not.toContain("didn't match")
+})
+
+test("a quote that matches nothing falls back to the pin's own call, and says so", { plugins: [PEEK] }, async ($, on) => {
+  await setup($, on)
+  await reply($, 'msg-a', 'Rename the helper?')
+
+  const answer = await pinWith($, 'u1', { text: 'Still open: Q9', quote: 'drop the database' })
+
+  expect((await peek($))[0]?.anchor).toEqual({ row: 'u1', block: 'end' })
+  expect(answer.result).toContain("didn't match")
+})
+
+test('Claude can update a pin by its id, then remove it', { plugins: [PEEK] }, async ($, on) => {
+  await setup($, on)
+
+  const first = await pinWith($, 'u1', { text: 'Still open: Q2 and Q4', kind: 'question' })
+  expect(first.result).toContain('p1')
+
+  const updated = await pinWith($, 'u2', { text: 'Still open: Q4', replaces: 'p1' })
+  expect(updated.result).toContain('p1')
+  expect((await peek($)).map(one => [one.claudeId, one.text])).toEqual([['p1', 'Still open: Q4']])
+
+  await pinWith($, 'u3', { text: '', replaces: 'p1' })
+  expect(await peek($)).toEqual([])
+})
+
+test('an update keeps the anchor of the questions it is about, unless given a new quote', { plugins: [PEEK] }, async ($, on) => {
+  await setup($, on)
+  await reply($, 'msg-a', 'Should we keep the v1 endpoint?')
+  await pinWith($, 'u1', { text: 'Still open: Q2', quote: 'keep the v1 endpoint' })
+
+  await pinWith($, 'u2', { text: 'Still open: Q2, now urgent', replaces: 'p1' })
+
+  expect((await peek($))[0]?.anchor).toEqual({ row: 'msg-a', block: 'start' })
+})
+
+test('replacing a pin the person already dismissed pins it afresh', { plugins: [PEEK] }, async ($, on) => {
+  await setup($, on)
+  await pin($, 'u1', 'Still open: Q2')
+  await command($, 'pins', 'clear')
+
+  const answer = await pinWith($, 'u2', { text: 'Still open: Q2', replaces: 'p1' })
+
+  expect(answer.result).toContain('p2')
+  expect((await peek($)).map(one => one.claudeId)).toEqual(['p2'])
+})
+
+test('removing a pin that is already gone is not an error', async ($, on) => {
+  await setup($, on)
+
+  const answer = await pinWith($, 'u1', { text: '', replaces: 'p7' })
+
+  expect(answer.deny).toBeUndefined()
+  expect(answer.result).toContain('p7')
 })

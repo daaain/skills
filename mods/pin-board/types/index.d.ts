@@ -8,12 +8,18 @@ export type Pin = {
   source: 'claude' | 'auto'
   // Epoch milliseconds from $.clock.now().
   at: number
-  // The transcript row to scroll to: the pin tool's tool_use_id, or the answer message's uuid.
-  anchor?: string
+  // The id Claude updates or removes it by (`p1`, `p2`, ...); only on pins Claude made.
+  claudeId?: string
+  anchor?: PinAnchor
 }
+
+// Where a jump scrolls the transcript: a row by its id, and which edge of the screen it lands on.
+// `start` for a reply the pin quotes (read from its top); `end` for the pin call itself, so
+// what led up to it shows above.
+export type PinAnchor = { row: string; block: 'start' | 'end' }
 
 declare module 'claude-code' {
   interface PluginState {
-    'pin-board': { pins: Pin[]; expanded: string | null }
+    'pin-board': { pins: Pin[]; expanded: string | null; seq: number }
   }
 }

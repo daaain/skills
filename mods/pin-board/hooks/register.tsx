@@ -1,15 +1,19 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Pin, PinKind } from '../types'
-import { autoPinFor, hasText, isBackgroundOrigin, parsePinsCommand, preview } from './pins'
+import type { Pin, PinAnchor, PinKind } from '../types'
+import { autoPinFor, findQuoted, isBackgroundOrigin, parsePinsCommand, preview, textOf } from './pins'
 
 const PIN_TOOL = 'mcp__pin-board__pin'
 const PANE = 'pins'
 const MAX_PINS = 50
+// Recent replies kept for matching a pin's quote; older questions fall back to the pin's own call.
+const MAX_REPLIES = 200
 
 const pins = atom({ plugin: 'pin-board', key: 'pins' } as const, [])
 const expanded = atom({ plugin: 'pin-board', key: 'expanded' } as const, null)
+// The last `p<n>` id handed to Claude, in state so a hot reload never hands one out twice.
+const seq = atom({ plugin: 'pin-board', key: 'seq' } as const, 0)
 
 const KIND_COLOR: Record<PinKind, string> = {
   question: 'warning',
@@ -18,8 +22,10 @@ const KIND_COLOR: Record<PinKind, string> = {
   summary: 'inactive',
 }
 
-// Sent on every request, so it stays one line; the guidance rides on background prompts only.
-const TOOL_DESCRIPTION = "Pin a one- or two-line note above the user's prompt so it isn't lost when the transcript scrolls."
+// Sent on every request, so it stays one sentence; the wake guidance rides on background prompts only,
+// and how to update a pin is in each call's result.
+const TOOL_DESCRIPTION =
+  "Pin a one- or two-line note above the user's prompt so it isn't lost when the transcript scrolls, such as questions of yours the user hasn't answered yet."
 
 const WAKE_CONTEXT = [
   'pin-board: this turn was started by a background event, not by the user typing.',
@@ -54,6 +60,7 @@ type Live = {
   pendingWake: boolean
   currentTurn: string | undefined
   lastTextRow: string | undefined
+  replies: { uuid: string; text: string }[]
   isFullscreen: boolean
   isPaneClosedByPerson: boolean
   wakeTurns: Set<string>
@@ -64,6 +71,7 @@ const fresh = (): Live => ({
   pendingWake: false,
   currentTurn: undefined,
   lastTextRow: undefined,
+  replies: [],
   isFullscreen: false,
   isPaneClosedByPerson: false,
   wakeTurns: new Set(),
@@ -96,13 +104,20 @@ const removePins = async ($: EngineInterface, ids: ReadonlySet<string>) => {
 
 const clearPins = async ($: EngineInterface) => removePins($, new Set((await read($, pins)).map(pin => pin.id)))
 
+// A quoted earlier reply, read from its top; else the pin call itself at the screen's foot,
+// so the questions and the person's answer that led to it show above.
+const anchorFor = (quote: string | undefined, toolUseId: string): PinAnchor => {
+  const row = quote === undefined ? undefined : findQuoted(live.replies, quote)
+  return row === undefined ? { row: toolUseId, block: 'end' } : { row, block: 'start' }
+}
+
 // Scrolls the transcript to where the pin came from; answers why not, or undefined once it moved.
 // Only works in answer to the person's own press or command, and only where the transcript scrolls.
 const jumpTo = async ($: EngineInterface, pin: Pin): Promise<string | undefined> => {
   if (pin.anchor === undefined) return 'That pin has no place in the transcript to jump to.'
 
   try {
-    const moved = await $.ui.scroll({ to: { requestId: pin.anchor }, block: 'start' })
+    const moved = await $.ui.scroll({ to: { requestId: pin.anchor.row }, block: pin.anchor.block })
     return moved.deny === undefined ? undefined : `Couldn't scroll there: ${moved.deny}`
   } catch (error) {
     return `Couldn't scroll there: ${error instanceof Error ? error.message : String(error)}`
@@ -154,8 +169,16 @@ export const register: Register = on => {
       inputSchema: {
         type: 'object',
         properties: {
-          text: { type: 'string', description: 'What the user needs to see, in one or two lines.' },
+          text: {
+            type: 'string',
+            description: 'What the user needs to see, in one or two lines. Empty with `replaces` removes that pin.',
+          },
           kind: { type: 'string', enum: ['question', 'decision', 'fyi'], description: 'Defaults to fyi.' },
+          quote: {
+            type: 'string',
+            description: "A short exact excerpt of your earlier message this is about, so the pin's jump goes there.",
+          },
+          replaces: { type: 'string', description: 'The id (`p1`) of your earlier pin to update or, with empty text, remove.' },
         },
         required: ['text'],
       },
@@ -197,29 +220,55 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // Remembers the main loop's latest text reply, the row an automatic pin jumps back to.
+  // Indexes the main loop's text replies: the rows a pin's quote and an automatic pin jump back to.
   on('session.append', async ($, e, next) => {
     const stored = await next(e)
     const isReply = e.door === 'response' && e.agentId === undefined && e.message.role === 'assistant'
+    const text = isReply ? textOf(e.message.content) : ''
 
-    if (isReply && stored.uuid !== undefined && hasText(e.message.content)) live.lastTextRow = stored.uuid
+    if (stored.uuid !== undefined && text.trim() !== '') {
+      live.lastTextRow = stored.uuid
+      live.replies = [...live.replies, { uuid: stored.uuid, text }].slice(-MAX_REPLIES)
+    }
 
     return stored
   })
 
   on('tool.call', { tool: PIN_TOOL }, async ($, e) => {
-    const input = e as unknown as { text?: unknown; kind?: unknown }
+    const input = e as unknown as { text?: unknown; kind?: unknown; quote?: unknown; replaces?: unknown }
     const text = typeof input.text === 'string' ? input.text.trim() : ''
+    const kind = isPinKind(input.kind) ? input.kind : undefined
+    const quote = typeof input.quote === 'string' && input.quote.trim() !== '' ? input.quote : undefined
+    const replaces = typeof input.replaces === 'string' && input.replaces.trim() !== '' ? input.replaces.trim() : undefined
+    const existing = replaces === undefined ? undefined : (await read($, pins)).find(pin => pin.claudeId === replaces)
 
     if (text === '') {
-      return { deny: 'pin needs a non-empty `text`.' }
+      if (replaces === undefined) return { deny: 'pin needs a non-empty `text`, or `replaces` to remove a pin.' }
+      if (existing !== undefined) await removePins($, new Set([existing.id]))
+      return { result: existing === undefined ? `${replaces} was already gone.` : `Removed ${replaces}.` }
     }
 
-    const kind = isPinKind(input.kind) ? input.kind : 'fyi'
-    await addPin($, { kind, text, source: 'claude', anchor: e.tool_use_id })
+    const anchor = anchorFor(quote, e.tool_use_id)
+    const isQuoteMissed = quote !== undefined && anchor.block === 'end'
+    const missed = isQuoteMissed ? " The quote didn't match any of your recent replies, so its jump goes to this call instead." : ''
     if (e.agentId === undefined && live.currentTurn !== undefined) live.pinnedByClaude.add(live.currentTurn)
 
-    return { result: 'Pinned above the prompt.' }
+    if (existing !== undefined) {
+      // An update stays where the questions were asked unless it quotes somewhere new.
+      const kept = quote === undefined || isQuoteMissed ? (existing.anchor ?? anchor) : anchor
+      await update($, pins, list =>
+        list.map(pin => (pin.id === existing.id ? { ...pin, text, kind: kind ?? pin.kind, anchor: kept } : pin)),
+      )
+      return { result: `Updated ${replaces}.${missed}` }
+    }
+
+    const claudeId = `p${await update($, seq, n => n + 1)}`
+    await addPin($, { kind: kind ?? 'fyi', text, source: 'claude', claudeId, anchor })
+    const gone = replaces === undefined ? '' : `${replaces} was already dismissed, so this is a new pin. `
+
+    return {
+      result: `${gone}Pinned as ${claudeId}. To update it later, call pin with replaces: "${claudeId}" and the new text; with empty text to remove it.${missed}`,
+    }
   })
 
   // A permission prompt mid-wake would be the very interruption this mod exists to avoid.
@@ -238,7 +287,8 @@ export const register: Register = on => {
       if (live.currentTurn === e.turnId) live.currentTurn = undefined
 
       const auto = isWake && !isPinned && e.reason === 'answer' ? autoPinFor(e.answer) : null
-      if (auto !== null) await addPin($, { ...auto, source: 'auto', anchor: live.lastTextRow })
+      const anchor: PinAnchor | undefined = live.lastTextRow === undefined ? undefined : { row: live.lastTextRow, block: 'start' }
+      if (auto !== null) await addPin($, { ...auto, source: 'auto', anchor })
     }
 
     return done

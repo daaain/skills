@@ -78,12 +78,35 @@ export const parsePinsCommand = (args: string): PinsCommand => {
   return { action: 'usage' }
 }
 
-// Whether a Messages API `content` (a string, or a list of blocks) holds visible text.
-export const hasText = (content: unknown): boolean => {
-  if (typeof content === 'string') return content.trim() !== ''
-  if (!Array.isArray(content)) return false
+// The visible text of a Messages API `content`: a string, or a list of blocks whose text blocks are joined.
+export const textOf = (content: unknown): string => {
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
 
-  return content.some(
-    block => typeof block === 'object' && block !== null && block.type === 'text' && String(block.text).trim() !== '',
-  )
+  return content
+    .filter(block => typeof block === 'object' && block !== null && block.type === 'text')
+    .map(block => String(block.text))
+    .join('\n')
+}
+
+// A quote shorter than this, once normalised, would match too many replies to trust.
+export const MIN_QUOTE_CHARS = 8
+
+const normalise = (text: string) =>
+  text
+    .toLowerCase()
+    .replace(/[*_`~]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+// The newest reply whose text holds the quote, ignoring case, spacing and markdown emphasis.
+export const findQuoted = (rows: readonly { uuid: string; text: string }[], quote: string): string | undefined => {
+  const needle = normalise(quote)
+  if (needle.length < MIN_QUOTE_CHARS) return undefined
+
+  for (let i = rows.length - 1; i >= 0; i -= 1) {
+    if (normalise(rows[i]!.text).includes(needle)) return rows[i]!.uuid
+  }
+
+  return undefined
 }

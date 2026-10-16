@@ -19,7 +19,26 @@ It works in two layers:
    - is at least 280 characters, so it reads as a summary rather than an all-clear.
 
    Short "nothing new, still watching" answers are skipped. Turns you started yourself are never auto-pinned.
-2. **Claude-driven (curated).** Claude gets a `pin` tool (`mcp__pin-board__pin`, with `text` and `kind` set to `question`, `decision` or `fyi`), approved without a permission prompt unless you deny it. Its description is one line, so it costs little on every request. The guidance on *when* to pin is attached only to prompts that come from background events, which is where it matters. When Claude pins during such a turn, the automatic pin for that turn is skipped.
+2. **Claude-driven (curated).** Claude gets a `pin` tool (`mcp__pin-board__pin`), approved without a permission prompt unless you deny it. Its description is one sentence, so it costs little on every request. The guidance on *when* to pin during wake-ups is attached only to prompts that come from background events, which is where it matters. When Claude pins during such a turn, the automatic pin for that turn is skipped.
+
+## Parking unanswered questions
+
+When Claude asks several things and you answer only some, or reply about something else, Claude can pin what's still open, instead of reminding you every turn:
+
+```
+pin({ kind: "question",
+      text: "Still open: Q2 (rename the helper?) and Q4 (keep the v1 endpoint?)",
+      quote: "Should we keep the v1 endpoint" })
+```
+
+| Field | Meaning |
+|---|---|
+| `text` | What you need to see, in a line or two |
+| `kind` | `question`, `decision` or `fyi` (the default) |
+| `quote` | Optional. A short exact excerpt of Claude's earlier message the pin is about |
+| `replaces` | Optional. The id of Claude's earlier pin to update, or, with empty `text`, remove |
+
+Each of Claude's pins gets a stable id (`p1`, `p2`, …). The tool's reply tells Claude the id and how to update or remove that pin, so when you answer Q2, Claude can change the pin to "Still open: Q4", or remove it once nothing is left. Updating a pin you already dismissed creates a new one.
 
 ## Where pins show
 
@@ -46,8 +65,11 @@ The buttons are also reachable from the keyboard: press `ctrl+x tab` to put focu
 
 **↑ jump** (or `/pins go <n>`) scrolls the transcript to where the pin came from:
 
-- for Claude's pins, the `pin` tool call's row;
-- for automatic pins, the turn's last text reply.
+- **a pin with a matching `quote`:** the earlier reply it quotes, shown from its top. The match ignores case, spacing and markdown emphasis, and checks the last 200 replies, newest first.
+- **a pin from Claude without a quote, or whose quote didn't match:** the `pin` call itself, placed at the **bottom** of the screen, so the questions and your answer that led to it show above it. Claude is told when its quote didn't match.
+- **an automatic pin:** the turn's last text reply, shown from its top.
+
+The reply index lives in memory, so after a hot reload of the mod, quotes only match replies written since.
 
 It only works in fullscreen, where Claude Code scrolls the transcript itself; on the normal screen your terminal owns the scrollback. Claude Code only moves the transcript when you ask, by a press or a typed command. If it can't move there (for example, the row is folded into a collapsed tool group), a toast says why.
 
@@ -72,6 +94,6 @@ claude plugin validate mods/pin-board   # what it hooks and calls
 claude plugin test mods/pin-board       # unit + integration tests
 ```
 
-- `hooks/pins.ts` holds the pure logic: origin classification, the question and summary heuristics, previews, and `/pins` argument parsing.
-- `hooks/register.tsx` holds the hooks: turn tracking, the `pin` tool and its wake-only guidance, `/pins`, the `AbovePrompt` band and the `Pins` pane.
+- `hooks/pins.ts` holds the pure logic: origin classification, the question and summary heuristics, previews, quote matching, and `/pins` argument parsing.
+- `hooks/register.tsx` holds the hooks: turn tracking, the reply index, the `pin` tool (`quote`, `replaces`) and its wake-only guidance, `/pins`, the `AbovePrompt` band and the `Pins` pane.
 - `types/index.d.ts` is the `$.state` contract.
