@@ -4,6 +4,10 @@ A Claude Code mod that keeps what matters from **background-woken turns** pinned
 
 When Claude is watching a PR, running a Monitor, waiting on subagents or looping with `/loop` / ScheduleWakeup, each wake-up ends with a summary or a question. The transcript scrolls past it and it's easy to miss. pin-board catches those and pins them (in a side pane in fullscreen, above the prompt otherwise) until you dismiss them.
 
+![pin-board in a fullscreen terminal: two of Claude's unanswered questions in the docked Pins pane, each with its time, kind and ↑ jump, and the one-line band above the prompt](assets/screenshot.webp)
+
+On the normal screen, pins show in a band above the prompt instead:
+
 ```
 📌 Pinned (2) clear all
 ▸1 10:05 summary   CI is green on all three branches; two reviewers approved…  ↑ jump ✕
