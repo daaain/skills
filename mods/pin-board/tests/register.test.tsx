@@ -71,15 +71,17 @@ type Seen = {
   opened: string[]
   isPaneUp: boolean
   toolDescription: string
-  // Transcript files by path (with a reported size where it differs), and each argv run.
+  // Transcript files by path (with a reported size where it differs), each argv spawned,
+  // and whether grep is there to spawn.
   files: Record<string, string>
   sizes: Record<string, number>
   argvs: (readonly string[])[]
+  hasGrep: boolean
 }
 
 // The engine's bottom of each chain the mods reach, standing in for a session.
 const setup = async ($: Engine, on: On, store: Record<string, unknown> = {}): Promise<Seen> => {
-  const seen: Seen = { contexts: [], opened: [], isPaneUp: false, toolDescription: '', files: {}, sizes: {}, argvs: [] }
+  const seen: Seen = { contexts: [], opened: [], isPaneUp: false, toolDescription: '', files: {}, sizes: {}, argvs: [], hasGrep: true }
 
   mock.clock(on, { now: Date.UTC(2026, 9, 16, 9, 30) })
   mock.store(on, store)
@@ -95,12 +97,15 @@ const setup = async ($: Engine, on: On, store: Record<string, unknown> = {}): Pr
     const path = (e as { path: string }).path
     return path in seen.files ? { value: seen.files[path]! } : { deny: 'missing' }
   })
-  on('process.run', ($, e) => {
-    const { argv } = e as { argv: readonly string[] }
-    seen.argvs.push(argv)
-    // A tail that starts part-way through the first line, as a real one does.
-    const text = seen.files[argv[argv.length - 1]!] ?? ''
-    return { value: { exitCode: 0, stdout: text.slice(50), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  // grep streamed in small pieces, so lines arrive split across them as a real stream's can.
+  on('process.spawn', async function* ($, e) {
+    seen.argvs.push(e.argv)
+    if (!seen.hasGrep) throw new Error('grep: not found')
+
+    const [, , pattern, path] = e.argv
+    const matched = (seen.files[path!] ?? '').split('\n').filter(line => line.includes(pattern!)).join('\n')
+    for (let i = 0; i < matched.length; i += 40) yield { stream: 'stdout' as const, text: matched.slice(i, i + 40) }
+    return { value: { code: matched === '' ? 1 : 0, signal: null } }
   })
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('tool.register', ($, e) => {
@@ -511,19 +516,42 @@ test("resuming rebuilds the reply index from the transcript, so old replies can 
   await pinWith($, 'u1', { text: 'Still open: v1?', quote: 'keep the v1 endpoint' })
 
   expect((await peek($))[0]?.anchor).toEqual({ row: 'old-1', block: 'start' })
-  expect(host.argvs).toEqual([])
+  expect(host.argvs).toEqual([['grep', '-F', '"type":"assistant"', '/t/s1.jsonl']])
 })
 
-test('a transcript too big to read whole is read from its end with tail', { plugins: [PEEK] }, async ($, on) => {
+test('a transcript of any size is streamed whole, so its oldest replies can be quoted', { plugins: [PEEK] }, async ($, on) => {
   const host = await setup($, on)
-  host.files['/t/s1.jsonl'] = ['x'.repeat(100), transcriptLine('new-1', 'Keep v1?')].join('\n')
+  const padding = Array.from({ length: 50 }, (_, i) => JSON.stringify({ type: 'api-request-blob', uuid: `b${i}`, blob: 'x'.repeat(200) }))
+  host.files['/t/s1.jsonl'] = [transcriptLine('first', 'Keep v1 or drop it?'), ...padding, transcriptLine('last', 'Done.')].join('\n')
   host.sizes['/t/s1.jsonl'] = 9_000_000
 
   await sessionStarts($, 'resume', 's1')
-  await pinWith($, 'u1', { text: 'Still open', quote: 'Keep v1?' })
+  await pinWith($, 'u1', { text: 'Still open', quote: 'Keep v1 or drop it?' })
 
-  expect(host.argvs[0]?.[0]).toBe('tail')
-  expect((await peek($))[0]?.anchor).toEqual({ row: 'new-1', block: 'start' })
+  expect((await peek($))[0]?.anchor).toEqual({ row: 'first', block: 'start' })
+})
+
+test('without grep, a transcript small enough is read whole instead', { plugins: [PEEK] }, async ($, on) => {
+  const host = await setup($, on)
+  host.hasGrep = false
+  host.files['/t/s1.jsonl'] = transcriptLine('old-1', 'Should we keep the v1 endpoint?')
+
+  await sessionStarts($, 'resume', 's1')
+  await pinWith($, 'u1', { text: 'Still open', quote: 'keep the v1 endpoint' })
+
+  expect((await peek($))[0]?.anchor).toEqual({ row: 'old-1', block: 'start' })
+})
+
+test('without grep, a transcript too big to read whole leaves quotes to fall back', { plugins: [PEEK] }, async ($, on) => {
+  const host = await setup($, on)
+  host.hasGrep = false
+  host.files['/t/s1.jsonl'] = transcriptLine('old-1', 'Should we keep the v1 endpoint?')
+  host.sizes['/t/s1.jsonl'] = 9_000_000
+
+  await sessionStarts($, 'resume', 's1')
+  const answer = await pinWith($, 'u1', { text: 'Still open', quote: 'keep the v1 endpoint' })
+
+  expect(answer.result).toContain("didn't match")
 })
 
 test('an unreadable transcript leaves quotes to fall back, and nothing breaks', { plugins: [PEEK] }, async ($, on) => {

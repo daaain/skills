@@ -80,7 +80,7 @@ It only works in fullscreen, where Claude Code scrolls the transcript itself; on
 The board is saved in the mod's store under the session's id after every change, so `claude --resume` (or `/resume`) brings back that session's pins, and Claude's pin ids carry on from where they were.
 
 - **`/clear`** and **`--fork-session`** start with an empty board. The board you left stays saved under the old session, ready for its resume.
-- **The reply index** isn't saved; it's rebuilt from the end of the transcript (the whole file when it's under 4 MiB, otherwise its last 4 MiB, read with `tail`). If the transcript can't be read, as on Windows for a long one, quotes only match replies written since, and jumps fall back to the pin call.
+- **The reply index** isn't saved; it's rebuilt from the whole transcript, whatever its size, by streaming `grep` for Claude's reply lines (the replies are a small part of a transcript, under 15% here). Where `grep` isn't available, as on Windows, a transcript up to 4 MiB is read whole instead; beyond that, quotes only match replies written since, and jumps fall back to the pin call.
 - The transcript's format belongs to Claude Code, not the mods API, so the mod skips any line it doesn't recognise rather than failing.
 - Boards of the 50 most recent sessions are kept; older ones are pruned.
 

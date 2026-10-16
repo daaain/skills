@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { asksQuestion, autoPinFor, boardsToPrune, findQuoted, isBackgroundOrigin, parsePinsCommand, preview, repliesFromTranscript, textOf } from '../hooks/pins'
+import { asksQuestion, autoPinFor, boardsToPrune, findQuoted, isBackgroundOrigin, parsePinsCommand, preview, replyWindow, repliesFromTranscript, textOf } from '../hooks/pins'
 
 describe('isBackgroundOrigin', () => {
   test('the person typing, on any client, is not a background wake', () => {
@@ -152,5 +152,22 @@ describe('boardsToPrune', () => {
 
     expect(boardsToPrune(boards, 2)).toEqual(['board:b'])
     expect(boardsToPrune(boards, 3)).toEqual([])
+  })
+})
+
+describe('replyWindow', () => {
+  const row = (uuid: string, text: string) =>
+    JSON.stringify({ type: 'assistant', uuid, message: { role: 'assistant', content: [{ type: 'text', text }] } })
+
+  test('joins lines split across pieces, and keeps only the newest `max` replies', () => {
+    const stream = [row('a1', 'one'), row('a2', 'two'), row('a3', 'three')].join('\n')
+    const window = replyWindow(2)
+
+    for (let i = 0; i < stream.length; i += 7) window.push(stream.slice(i, i + 7))
+
+    expect(window.end()).toEqual([
+      { uuid: 'a2', text: 'two' },
+      { uuid: 'a3', text: 'three' },
+    ])
   })
 })

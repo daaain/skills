@@ -10,6 +10,7 @@ import {
   parsePinsCommand,
   preview,
   repliesFromTranscript,
+  replyWindow,
   textOf,
 } from './pins'
 
@@ -21,7 +22,7 @@ const MAX_REPLIES = 200
 // Boards of this many recent sessions stay in the store, for resuming them.
 const MAX_BOARDS = 50
 const BOARD_PREFIX = 'board:'
-// $.fs.read takes a file up to 4 MiB; a longer transcript is read from its end with tail.
+// $.fs.read takes a file up to 4 MiB.
 const MAX_WHOLE_READ = 4 * 1024 * 1024
 
 const pins = atom({ plugin: 'pin-board', key: 'pins' } as const, [])
@@ -127,15 +128,24 @@ const changePins = async ($: EngineInterface, change: (list: Pin[]) => Pin[]) =>
   return changed
 }
 
-// Rebuilds the reply index that quotes match against, from the transcript's recent end.
+// Rebuilds the reply index that quotes match against, from the whole transcript: grep streams
+// just the reply lines, whatever the file's size. Without grep, a file small enough is read whole.
 const restoreReplies = async ($: EngineInterface, transcriptPath: string) => {
   try {
-    const { size } = await $.fs.stat(transcriptPath)
-    const isTail = size > MAX_WHOLE_READ
-    const text = isTail
-      ? (await $.process.run(['tail', '-c', String(MAX_WHOLE_READ), transcriptPath])).stdout
-      : await $.fs.read(transcriptPath)
-    live.replies = repliesFromTranscript(text, isTail).slice(-MAX_REPLIES)
+    const window = replyWindow(MAX_REPLIES)
+    for await (const piece of $.process.spawn({ argv: ['grep', '-F', '"type":"assistant"', transcriptPath] })) {
+      if (piece.stream === 'stdout') window.push(piece.text)
+    }
+    live.replies = window.end()
+    if (live.replies.length > 0) return
+  } catch {
+    // No grep here: try reading the file whole.
+  }
+
+  try {
+    if ((await $.fs.stat(transcriptPath)).size <= MAX_WHOLE_READ) {
+      live.replies = repliesFromTranscript(await $.fs.read(transcriptPath), false).slice(-MAX_REPLIES)
+    }
   } catch {
     // No transcript yet, or one the mod can't read: quotes fall back to the pin call.
   }

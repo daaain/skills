@@ -145,3 +145,32 @@ export const boardsToPrune = (boards: readonly { key: string; savedAt: number }[
     .sort((a, b) => b.savedAt - a.savedAt)
     .slice(keep)
     .map(board => board.key)
+
+// Collects replies from a transcript streamed in pieces of any size, keeping the newest `max`;
+// a line split across two pieces is read once it is whole.
+export const replyWindow = (max: number) => {
+  let partial = ''
+  let replies: Reply[] = []
+
+  const take = (lines: string) => {
+    replies = [...replies, ...repliesFromTranscript(lines, false)].slice(-max)
+  }
+
+  return {
+    push(text: string) {
+      const joined = partial + text
+      const cut = joined.lastIndexOf('\n')
+      if (cut === -1) {
+        partial = joined
+        return
+      }
+      take(joined.slice(0, cut))
+      partial = joined.slice(cut + 1)
+    },
+    end(): Reply[] {
+      take(partial)
+      partial = ''
+      return replies
+    },
+  }
+}
