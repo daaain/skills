@@ -71,13 +71,37 @@ type Seen = {
   opened: string[]
   isPaneUp: boolean
   toolDescription: string
+  // Transcript files by path (with a reported size where it differs), and each argv run.
+  files: Record<string, string>
+  sizes: Record<string, number>
+  argvs: (readonly string[])[]
 }
 
 // The engine's bottom of each chain the mods reach, standing in for a session.
-const setup = async ($: Engine, on: On): Promise<Seen> => {
-  const seen: Seen = { contexts: [], opened: [], isPaneUp: false, toolDescription: '' }
+const setup = async ($: Engine, on: On, store: Record<string, unknown> = {}): Promise<Seen> => {
+  const seen: Seen = { contexts: [], opened: [], isPaneUp: false, toolDescription: '', files: {}, sizes: {}, argvs: [] }
 
   mock.clock(on, { now: Date.UTC(2026, 9, 16, 9, 30) })
+  mock.store(on, store)
+  on('session.id', () => ({ value: 's1' }))
+  on('classic.SessionStart', () => ({}))
+  on('classic.Stop', () => ({}))
+  on('fs.stat', ($, e) => {
+    const path = (e as { path: string }).path
+    if (!(path in seen.files)) return { deny: 'missing' }
+    return { value: { kind: 'file', size: seen.sizes[path] ?? seen.files[path]!.length, mtimeMs: 0, isLink: false } }
+  })
+  on('fs.read', ($, e) => {
+    const path = (e as { path: string }).path
+    return path in seen.files ? { value: seen.files[path]! } : { deny: 'missing' }
+  })
+  on('process.run', ($, e) => {
+    const { argv } = e as { argv: readonly string[] }
+    seen.argvs.push(argv)
+    // A tail that starts part-way through the first line, as a real one does.
+    const text = seen.files[argv[argv.length - 1]!] ?? ''
+    return { value: { exitCode: 0, stdout: text.slice(50), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('tool.register', ($, e) => {
     seen.toolDescription = e.description
@@ -448,4 +472,74 @@ test('removing a pin that is already gone is not an error', async ($, on) => {
 
   expect(answer.deny).toBeUndefined()
   expect(answer.result).toContain('p7')
+})
+
+const sessionStarts = ($: Engine, source: 'startup' | 'resume' | 'clear' | 'fork', id: string) =>
+  $.classic.SessionStart({ source, session_id: id, transcript_path: `/t/${id}.jsonl` } as Parameters<Engine['classic']['SessionStart']>[0])
+
+const transcriptLine = (uuid: string, text: string) =>
+  JSON.stringify({ type: 'assistant', uuid, message: { role: 'assistant', content: [{ type: 'text', text }] } })
+
+test('pins come back when the session is resumed, and Claude ids keep counting', { plugins: [PEEK] }, async ($, on) => {
+  await setup($, on)
+  await sessionStarts($, 'startup', 's1')
+  await pinWith($, 'u1', { text: 'Still open: Q2', kind: 'question' })
+
+  await sessionStarts($, 'clear', 's2')
+  expect(await peek($)).toEqual([])
+
+  await sessionStarts($, 'resume', 's1')
+  expect((await peek($)).map(one => [one.claudeId, one.text])).toEqual([['p1', 'Still open: Q2']])
+  expect((await pinWith($, 'u2', { text: 'Deploy done' })).result).toContain('p2')
+})
+
+test('a board saved by an earlier process loads on resume', { plugins: [PEEK] }, async ($, on) => {
+  const saved = { pins: [{ id: 'x', kind: 'question', text: 'Rebase onto main?', source: 'claude', at: 0, claudeId: 'p4' }], seq: 4, savedAt: 1 }
+  await setup($, on, { 'board:s9': saved })
+
+  await sessionStarts($, 'resume', 's9')
+
+  expect((await peek($)).map(one => one.text)).toEqual(['Rebase onto main?'])
+  expect((await pinWith($, 'u1', { text: 'Next' })).result).toContain('p5')
+})
+
+test("resuming rebuilds the reply index from the transcript, so old replies can be quoted", { plugins: [PEEK] }, async ($, on) => {
+  const host = await setup($, on)
+  host.files['/t/s1.jsonl'] = [transcriptLine('old-1', 'Should we keep the v1 endpoint?'), transcriptLine('old-2', 'Done.')].join('\n')
+
+  await sessionStarts($, 'resume', 's1')
+  await pinWith($, 'u1', { text: 'Still open: v1?', quote: 'keep the v1 endpoint' })
+
+  expect((await peek($))[0]?.anchor).toEqual({ row: 'old-1', block: 'start' })
+  expect(host.argvs).toEqual([])
+})
+
+test('a transcript too big to read whole is read from its end with tail', { plugins: [PEEK] }, async ($, on) => {
+  const host = await setup($, on)
+  host.files['/t/s1.jsonl'] = ['x'.repeat(100), transcriptLine('new-1', 'Keep v1?')].join('\n')
+  host.sizes['/t/s1.jsonl'] = 9_000_000
+
+  await sessionStarts($, 'resume', 's1')
+  await pinWith($, 'u1', { text: 'Still open', quote: 'Keep v1?' })
+
+  expect(host.argvs[0]?.[0]).toBe('tail')
+  expect((await peek($))[0]?.anchor).toEqual({ row: 'new-1', block: 'start' })
+})
+
+test('an unreadable transcript leaves quotes to fall back, and nothing breaks', { plugins: [PEEK] }, async ($, on) => {
+  await setup($, on)
+
+  await sessionStarts($, 'resume', 's1')
+  const answer = await pinWith($, 'u1', { text: 'Still open', quote: 'keep the v1 endpoint' })
+
+  expect(answer.result).toContain("didn't match")
+})
+
+test('a session the mod missed starting is picked up at the end of a turn', { plugins: [PEEK] }, async ($, on) => {
+  const saved = { pins: [{ id: 'x', kind: 'fyi', text: 'From before', source: 'claude', at: 0, claudeId: 'p1' }], seq: 1, savedAt: 1 }
+  await setup($, on, { 'board:s7': saved })
+
+  await $.classic.Stop({ session_id: 's7', transcript_path: '/t/s7.jsonl', stop_hook_active: false } as Parameters<Engine['classic']['Stop']>[0])
+
+  expect((await peek($)).map(one => one.text)).toEqual(['From before'])
 })

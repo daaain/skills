@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { asksQuestion, autoPinFor, findQuoted, isBackgroundOrigin, parsePinsCommand, preview, textOf } from '../hooks/pins'
+import { asksQuestion, autoPinFor, boardsToPrune, findQuoted, isBackgroundOrigin, parsePinsCommand, preview, repliesFromTranscript, textOf } from '../hooks/pins'
 
 describe('isBackgroundOrigin', () => {
   test('the person typing, on any client, is not a background wake', () => {
@@ -112,5 +112,45 @@ describe('findQuoted', () => {
     expect(findQuoted(rows, 'drop the database')).toBeUndefined()
     expect(findQuoted(rows, 'the')).toBeUndefined()
     expect(findQuoted(rows, '   ')).toBeUndefined()
+  })
+})
+
+describe('repliesFromTranscript', () => {
+  const line = (row: object) => JSON.stringify(row)
+  const assistant = (uuid: string, text: string, extra: object = {}) =>
+    line({ type: 'assistant', uuid, message: { role: 'assistant', content: [{ type: 'text', text }] }, ...extra })
+
+  test("keeps the main conversation's text replies, oldest first", () => {
+    const transcript = [
+      line({ type: 'user', uuid: 'u1', message: { role: 'user', content: 'hi' } }),
+      assistant('a1', 'First reply'),
+      line({ type: 'assistant', uuid: 'a2', message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'x' }] } }),
+      assistant('a3', 'A subagent reply', { isSidechain: true }),
+      assistant('a4', 'Second reply'),
+    ].join('\n')
+
+    expect(repliesFromTranscript(transcript, false)).toEqual([
+      { uuid: 'a1', text: 'First reply' },
+      { uuid: 'a4', text: 'Second reply' },
+    ])
+  })
+
+  test('a tail drops its cut first line, and any line that is not JSON', () => {
+    const transcript = ['ssistant","uuid":"cut"}', assistant('a1', 'Kept'), '{not json', ''].join('\n')
+
+    expect(repliesFromTranscript(transcript, true)).toEqual([{ uuid: 'a1', text: 'Kept' }])
+  })
+})
+
+describe('boardsToPrune', () => {
+  test('names the oldest boards past the limit, and nothing within it', () => {
+    const boards = [
+      { key: 'board:a', savedAt: 30 },
+      { key: 'board:b', savedAt: 10 },
+      { key: 'board:c', savedAt: 20 },
+    ]
+
+    expect(boardsToPrune(boards, 2)).toEqual(['board:b'])
+    expect(boardsToPrune(boards, 3)).toEqual([])
   })
 })

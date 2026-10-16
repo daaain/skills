@@ -2,18 +2,34 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Pin, PinAnchor, PinKind } from '../types'
-import { autoPinFor, findQuoted, isBackgroundOrigin, parsePinsCommand, preview, textOf } from './pins'
+import {
+  autoPinFor,
+  boardsToPrune,
+  findQuoted,
+  isBackgroundOrigin,
+  parsePinsCommand,
+  preview,
+  repliesFromTranscript,
+  textOf,
+} from './pins'
 
 const PIN_TOOL = 'mcp__pin-board__pin'
 const PANE = 'pins'
 const MAX_PINS = 50
 // Recent replies kept for matching a pin's quote; older questions fall back to the pin's own call.
 const MAX_REPLIES = 200
+// Boards of this many recent sessions stay in the store, for resuming them.
+const MAX_BOARDS = 50
+const BOARD_PREFIX = 'board:'
+// $.fs.read takes a file up to 4 MiB; a longer transcript is read from its end with tail.
+const MAX_WHOLE_READ = 4 * 1024 * 1024
 
 const pins = atom({ plugin: 'pin-board', key: 'pins' } as const, [])
 const expanded = atom({ plugin: 'pin-board', key: 'expanded' } as const, null)
 // The last `p<n>` id handed to Claude, in state so a hot reload never hands one out twice.
 const seq = atom({ plugin: 'pin-board', key: 'seq' } as const, 0)
+// Which session the board belongs to, and its transcript; in state so a hot reload keeps both.
+const session = atom({ plugin: 'pin-board', key: 'session' } as const, null)
 
 const KIND_COLOR: Record<PinKind, string> = {
   question: 'warning',
@@ -88,15 +104,84 @@ const openPane = async ($: EngineInterface, isAsked: boolean) => {
   $.ui.invalidate('ui.render')
 }
 
+type Board = { pins: Pin[]; seq: number; savedAt: number }
+
+const isBoard = (value: unknown): value is Board =>
+  typeof value === 'object' &&
+  value !== null &&
+  Array.isArray((value as Board).pins) &&
+  typeof (value as Board).seq === 'number' &&
+  typeof (value as Board).savedAt === 'number'
+
+// Writes the board under its session, so `claude --resume` brings it back.
+const saveBoard = async ($: EngineInterface) => {
+  const id = (await read($, session))?.id ?? (await $.session.id())
+  const board: Board = { pins: await read($, pins), seq: await read($, seq), savedAt: await $.clock.now() }
+  await $.store.set(`${BOARD_PREFIX}${id}`, board)
+}
+
+// Every change to the pins goes through here, so the store never lags behind.
+const changePins = async ($: EngineInterface, change: (list: Pin[]) => Pin[]) => {
+  const changed = await update($, pins, change)
+  await saveBoard($)
+  return changed
+}
+
+// Rebuilds the reply index that quotes match against, from the transcript's recent end.
+const restoreReplies = async ($: EngineInterface, transcriptPath: string) => {
+  try {
+    const { size } = await $.fs.stat(transcriptPath)
+    const isTail = size > MAX_WHOLE_READ
+    const text = isTail
+      ? (await $.process.run(['tail', '-c', String(MAX_WHOLE_READ), transcriptPath])).stdout
+      : await $.fs.read(transcriptPath)
+    live.replies = repliesFromTranscript(text, isTail).slice(-MAX_REPLIES)
+  } catch {
+    // No transcript yet, or one the mod can't read: quotes fall back to the pin call.
+  }
+}
+
+const pruneBoards = async ($: EngineInterface) => {
+  const keys = (await $.store.keys()).filter(key => key.startsWith(BOARD_PREFIX))
+  if (keys.length <= MAX_BOARDS) return
+
+  const boards = await Promise.all(
+    keys.map(async key => {
+      const board = await $.store.get(key)
+      return { key, savedAt: isBoard(board) ? board.savedAt : 0 }
+    }),
+  )
+  for (const key of boardsToPrune(boards, MAX_BOARDS)) await $.store.delete(key)
+}
+
+// Moves the board to the session now running: a resume brings its pins back, a new session or
+// a /clear starts empty, and the board left behind stays stored under its own id.
+const joinSession = async ($: EngineInterface, id: string, transcriptPath: string) => {
+  if ((await read($, session))?.id === id) return
+
+  const stored = await $.store.get(`${BOARD_PREFIX}${id}`)
+  const board = isBoard(stored) ? stored : undefined
+  await update($, session, () => ({ id, transcriptPath }))
+  await update($, pins, () => board?.pins ?? [])
+  await update($, seq, () => board?.seq ?? 0)
+  await update($, expanded, () => null)
+  live = { ...fresh(), isFullscreen: live.isFullscreen }
+
+  await restoreReplies($, transcriptPath)
+  if (board !== undefined && board.pins.length > 0) await openPane($, false)
+  else if ((await $.ui.panes()).some(pane => pane.id === PANE)) await $.ui.close({ id: PANE })
+  await pruneBoards($)
+}
+
 const addPin = async ($: EngineInterface, fields: Omit<Pin, 'id' | 'at'>) => {
   const at = await $.clock.now()
   const pin: Pin = { ...fields, id: `${at.toString(36)}-${Math.random().toString(36).slice(2, 6)}`, at }
-  await update($, pins, list => [...list, pin].slice(-MAX_PINS))
+  await changePins($, list => [...list, pin].slice(-MAX_PINS))
   await openPane($, false)
 }
 
 const removePins = async ($: EngineInterface, ids: ReadonlySet<string>) => {
-  const left = await update($, pins, list => list.filter(pin => !ids.has(pin.id)))
+  const left = await changePins($, list => list.filter(pin => !ids.has(pin.id)))
   if (left.length === 0 && (await $.ui.panes()).some(pane => pane.id === PANE)) {
     await $.ui.close({ id: PANE })
   }
@@ -189,7 +274,25 @@ export const register: Register = on => {
       argumentHint: '[<n> | go <n> | done <n>… | clear]',
     })
 
+    // After a hot reload the board is still in $.state, but the reply index went with the module.
+    const current = await read($, session)
+    if (current !== null) await restoreReplies($, current.transcriptPath)
+
     return next(e)
+  })
+
+  // Startup, resume, /clear and fork each start a session: the board follows its id.
+  on('classic.SessionStart', async ($, e, next) => {
+    const done = await next(e)
+    await joinSession($, e.session_id, e.transcript_path)
+    return done
+  })
+
+  // A safety net for a session the mod saw no start of (loaded late, or switched mid-process).
+  on('classic.Stop', async ($, e, next) => {
+    const done = await next(e)
+    await joinSession($, e.session_id, e.transcript_path)
+    return done
   })
 
   // The turn starts inside next(e), so the wake is marked before it.
@@ -256,7 +359,7 @@ export const register: Register = on => {
     if (existing !== undefined) {
       // An update stays where the questions were asked unless it quotes somewhere new.
       const kept = quote === undefined || isQuoteMissed ? (existing.anchor ?? anchor) : anchor
-      await update($, pins, list =>
+      await changePins($, list =>
         list.map(pin => (pin.id === existing.id ? { ...pin, text, kind: kind ?? pin.kind, anchor: kept } : pin)),
       )
       return { result: `Updated ${replaces}.${missed}` }

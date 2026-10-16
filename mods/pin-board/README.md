@@ -45,9 +45,9 @@ Each of Claude's pins gets a stable id (`p1`, `p2`, …). The tool's reply tells
 - **Fullscreen:** a new pin opens a **Pins** pane docked beside the transcript, running from the top of the screen to the bottom, with every pin in full, newest first. The band above the prompt shrinks to one line. If you close the pane, it stays closed until you run `/pins`. The mod opens the pane itself only on a terminal at least 144 columns wide; `/pins` opens it at any width.
 - **Elsewhere:** pins show in the band above the prompt, newest first, one line each. ▸ expands a pin to its full text, rendered as Markdown.
 
-Pins never disappear on their own. Pins last for the session and survive a hot reload of the mod. They don't carry over to a new session.
+Pins never disappear on their own. See [Resuming a session](#resuming-a-session) for what happens to them across sessions.
 
-## Keyboard
+## Keyboard and mouse
 
 Pins are numbered newest first, and `/pins` runs at once, even while Claude is working:
 
@@ -61,6 +61,8 @@ Pins are numbered newest first, and `/pins` runs at once, even while Claude is w
 
 The buttons are also reachable from the keyboard: press `ctrl+x tab` to put focus on the band or pane, then Tab between buttons, Enter to press one, and Esc to go back to the prompt.
 
+With the mouse, every button (▸, ↑ jump, ✕, clear all) is clickable in the fullscreen terminal, the desktop app and VS Code; the wheel scrolls the band and pane. On the terminal's normal screen Claude Code doesn't receive clicks, so use the keys or `/pins` there.
+
 ## Jumping back to the transcript
 
 **↑ jump** (or `/pins go <n>`) scrolls the transcript to where the pin came from:
@@ -69,9 +71,18 @@ The buttons are also reachable from the keyboard: press `ctrl+x tab` to put focu
 - **a pin from Claude without a quote, or whose quote didn't match:** the `pin` call itself, placed at the **bottom** of the screen, so the questions and your answer that led to it show above it. Claude is told when its quote didn't match.
 - **an automatic pin:** the turn's last text reply, shown from its top.
 
-The reply index lives in memory, so after a hot reload of the mod, quotes only match replies written since.
+The reply index is rebuilt from the session's transcript when you resume it, and after a hot reload of the mod.
 
 It only works in fullscreen, where Claude Code scrolls the transcript itself; on the normal screen your terminal owns the scrollback. Claude Code only moves the transcript when you ask, by a press or a typed command. If it can't move there (for example, the row is folded into a collapsed tool group), a toast says why.
+
+## Resuming a session
+
+The board is saved in the mod's store under the session's id after every change, so `claude --resume` (or `/resume`) brings back that session's pins, and Claude's pin ids carry on from where they were.
+
+- **`/clear`** and **`--fork-session`** start with an empty board. The board you left stays saved under the old session, ready for its resume.
+- **The reply index** isn't saved; it's rebuilt from the end of the transcript (the whole file when it's under 4 MiB, otherwise its last 4 MiB, read with `tail`). If the transcript can't be read, as on Windows for a long one, quotes only match replies written since, and jumps fall back to the pin call.
+- The transcript's format belongs to Claude Code, not the mods API, so the mod skips any line it doesn't recognise rather than failing.
+- Boards of the 50 most recent sessions are kept; older ones are pruned.
 
 ## Install
 
@@ -94,6 +105,6 @@ claude plugin validate mods/pin-board   # what it hooks and calls
 claude plugin test mods/pin-board       # unit + integration tests
 ```
 
-- `hooks/pins.ts` holds the pure logic: origin classification, the question and summary heuristics, previews, quote matching, and `/pins` argument parsing.
-- `hooks/register.tsx` holds the hooks: turn tracking, the reply index, the `pin` tool (`quote`, `replaces`) and its wake-only guidance, `/pins`, the `AbovePrompt` band and the `Pins` pane.
+- `hooks/pins.ts` holds the pure logic: origin classification, the question and summary heuristics, previews, quote matching, transcript parsing, board pruning, and `/pins` argument parsing.
+- `hooks/register.tsx` holds the hooks: turn tracking, the reply index, saving and restoring the board per session, the `pin` tool (`quote`, `replaces`) and its wake-only guidance, `/pins`, the `AbovePrompt` band and the `Pins` pane.
 - `types/index.d.ts` is the `$.state` contract.

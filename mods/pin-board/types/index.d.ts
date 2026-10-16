@@ -18,8 +18,12 @@ export type Pin = {
 // what led up to it shows above.
 export type PinAnchor = { row: string; block: 'start' | 'end' }
 
+// The session the board belongs to: its id keys the board in $.store, its transcript rebuilds
+// the reply index that quotes match against.
+export type PinSession = { id: string; transcriptPath: string }
+
 declare module 'claude-code' {
   interface PluginState {
-    'pin-board': { pins: Pin[]; expanded: string | null; seq: number }
+    'pin-board': { pins: Pin[]; expanded: string | null; seq: number; session: PinSession | null }
   }
 }

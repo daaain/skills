@@ -110,3 +110,38 @@ export const findQuoted = (rows: readonly { uuid: string; text: string }[], quot
 
   return undefined
 }
+
+type Reply = { uuid: string; text: string }
+
+// The main conversation's text replies in a transcript's JSON lines, oldest first. The format
+// is Claude Code's own, not the mods API, so anything unexpected is skipped, never thrown.
+// `isTail` drops the first line, which a read of the file's end cuts part-way.
+export const repliesFromTranscript = (transcript: string, isTail: boolean): Reply[] => {
+  const lines = transcript.split('\n')
+  const replies: Reply[] = []
+
+  for (const line of isTail ? lines.slice(1) : lines) {
+    let row: unknown
+    try {
+      row = JSON.parse(line)
+    } catch {
+      continue
+    }
+    if (typeof row !== 'object' || row === null) continue
+
+    const { type, uuid, isSidechain, message } = row as Record<string, unknown>
+    if (type !== 'assistant' || isSidechain === true || typeof uuid !== 'string') continue
+
+    const text = textOf((message as { content?: unknown } | undefined)?.content)
+    if (text.trim() !== '') replies.push({ uuid, text })
+  }
+
+  return replies
+}
+
+// The store keys of the oldest boards beyond the newest `keep`.
+export const boardsToPrune = (boards: readonly { key: string; savedAt: number }[], keep: number): string[] =>
+  [...boards]
+    .sort((a, b) => b.savedAt - a.savedAt)
+    .slice(keep)
+    .map(board => board.key)
