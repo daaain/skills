@@ -51,6 +51,10 @@ const WAKE_CONTEXT = [
   "all-clear updates. If you don't pin, a question or long summary in your final answer is pinned for you.",
 ].join(' ')
 
+// A standing instruction, so it lives in the system prompt (cached) rather than in every turn.
+const NUMBERING_HINT =
+  'pin-board: when you ask the user several questions in one message, number them (1., 2., ...) so they can answer by number; pin any they leave unanswered.'
+
 const USAGE = [
   'Usage:',
   '  /pins            list pins, newest first (and reopen the side pane in fullscreen)',
@@ -253,8 +257,15 @@ const pinRow = ($: EngineInterface, e: Parameters<EngineInterface['ui']['resolve
   )
 }
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
   live = fresh()
+
+  if (options.numberQuestions !== false) {
+    on('prompt.compose', async ($, e, next) => {
+      const composed = await next(e)
+      return { ...composed, sections: [...composed.sections, { id: 'pin-board', text: NUMBERING_HINT, scope: 'session' }] }
+    })
+  }
 
   on('session.start', async ($, e, next) => {
     await $.tool.register({
@@ -298,7 +309,15 @@ export const register: Register = on => {
     return done
   })
 
-  // A safety net for a session the mod saw no start of (loaded late, or switched mid-process).
+  // Safety nets for a session the mod saw no start of (installed or enabled mid-session, or
+  // switched mid-process): the person's next prompt, early enough for Claude's pins that turn,
+  // and the end of any turn.
+  on('classic.UserPromptSubmit', async ($, e, next) => {
+    const done = await next(e)
+    await joinSession($, e.session_id, e.transcript_path)
+    return done
+  })
+
   on('classic.Stop', async ($, e, next) => {
     const done = await next(e)
     await joinSession($, e.session_id, e.transcript_path)

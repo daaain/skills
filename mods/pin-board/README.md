@@ -38,6 +38,8 @@ pin({ kind: "question",
 | `quote` | Optional. A short exact excerpt of Claude's earlier message the pin is about |
 | `replaces` | Optional. The id of Claude's earlier pin to update, or, with empty `text`, remove |
 
+So that you can answer by number and Claude can see which questions are left, the mod adds one line to Claude's system prompt: when it asks several questions in one message, number them, and pin any left unanswered. The line is cached with the rest of the system prompt, so it costs almost nothing per turn. To turn it off, set **Number Claude's questions** (`numberQuestions`) to off in the config menu.
+
 Each of Claude's pins gets a stable id (`p1`, `p2`, …). The tool's reply tells Claude the id and how to update or remove that pin, so when you answer Q2, Claude can change the pin to "Still open: Q4", or remove it once nothing is left. Updating a pin you already dismissed creates a new one.
 
 ## Where pins show
@@ -83,6 +85,15 @@ The board is saved in the mod's store under the session's id after every change,
 - **The reply index** isn't saved; it's rebuilt from the whole transcript, whatever its size, by streaming `grep` for Claude's reply lines (the replies are a small part of a transcript, under 15% here). Where `grep` isn't available, as on Windows, a transcript up to 4 MiB is read whole instead; beyond that, quotes only match replies written since, and jumps fall back to the pin call.
 - The transcript's format belongs to Claude Code, not the mods API, so the mod skips any line it doesn't recognise rather than failing.
 - Boards of the 50 most recent sessions are kept; older ones are pruned.
+- Installed or enabled partway through a session, the mod finds the session and its transcript at your next prompt.
+
+### Where an organization manages Claude Code
+
+There, a mod you install yourself doesn't receive Claude Code's session events or system-prompt composition; only mods the organization lists in managed settings do. Pinning, the band, the pane, jumps and `/pins` all still work, but:
+
+- pins aren't restored on resume, and `/clear` doesn't empty the board;
+- the reply index only covers replies written since the mod loaded;
+- the question-numbering line isn't added (put it in your CLAUDE.md instead).
 
 ## Install
 

@@ -88,6 +88,7 @@ const setup = async ($: Engine, on: On, store: Record<string, unknown> = {}): Pr
   on('session.id', () => ({ value: 's1' }))
   on('classic.SessionStart', () => ({}))
   on('classic.Stop', () => ({}))
+  on('classic.UserPromptSubmit', () => ({}))
   on('fs.stat', ($, e) => {
     const path = (e as { path: string }).path
     if (!(path in seen.files)) return { deny: 'missing' }
@@ -570,4 +571,39 @@ test('a session the mod missed starting is picked up at the end of a turn', { pl
   await $.classic.Stop({ session_id: 's7', transcript_path: '/t/s7.jsonl', stop_hook_active: false } as Parameters<Engine['classic']['Stop']>[0])
 
   expect((await peek($)).map(one => one.text)).toEqual(['From before'])
+})
+
+test('a mod loaded mid-session learns the transcript at the next prompt, before Claude pins', { plugins: [PEEK] }, async ($, on) => {
+  const host = await setup($, on)
+  host.files['/t/s1.jsonl'] = transcriptLine('old-1', 'Should we keep the v1 endpoint?')
+
+  await $.classic.UserPromptSubmit({ prompt: 'try pinning', session_id: 's1', transcript_path: '/t/s1.jsonl' } as Parameters<Engine['classic']['UserPromptSubmit']>[0])
+  await pinWith($, 'u1', { text: 'Still open: v1?', quote: 'keep the v1 endpoint' })
+
+  expect((await peek($))[0]?.anchor).toEqual({ row: 'old-1', block: 'start' })
+})
+
+const composed = async ($: Engine, on: On) => {
+  on('prompt.compose', () => ({ sections: [{ id: 'base', text: 'You are Claude.', scope: 'shared' as const }] }))
+  await setup($, on)
+  const input = {
+    model: 'claude-opus-5-5',
+    promptModel: 'claude-opus-5-5',
+    surfaces: ['terminal' as const],
+    tools: [PIN_TOOL],
+    outputStyle: { name: 'default', isKeepingCodingInstructions: true },
+    traits: [],
+  }
+  return (await $.prompt.compose(input)).sections
+}
+
+test('the system prompt asks Claude to number several questions', async ($, on) => {
+  const sections = await composed($, on)
+
+  expect(sections.map(one => one.id)).toEqual(['base', 'pin-board'])
+  expect(sections[1]).toMatchObject({ scope: 'session', text: expect.stringContaining('number them') })
+})
+
+test('the numbering hint can be turned off', { options: { numberQuestions: false } }, async ($, on) => {
+  expect((await composed($, on)).map(one => one.id)).toEqual(['base'])
 })
