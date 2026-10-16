@@ -102,6 +102,18 @@ You can also invoke skills directly:
 /devcontainer-security
 ```
 
+## Mods
+
+[Mods](https://code.claude.com/docs/en/plugins/mods/overview) are plugins that change Claude Code's own interface and behaviour. They live in `mods/` and install from the same marketplace (Claude Code v2.1.287 or later):
+
+| Mod | Description |
+|-----|-------------|
+| [pin-board](mods/pin-board/) | Pins questions and summaries from background-woken turns (PR watches, Monitors, subagents, `/loop`) above the prompt so they don't scroll away |
+
+```bash
+/plugin install pin-board --marketplace daaain/skills
+```
+
 ## Contributing
 
 Found a way to improve a skill? Have a new skill to suggest? PRs and issues welcome!

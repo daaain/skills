@@ -1,0 +1,8 @@
+{
+  "name": "pin-board",
+  "version": "0.1.0",
+  "description": "Pins questions and summaries from background-woken turns above the prompt so they don't scroll away.",
+  "author": { "name": "Daniel Demmel" },
+  "license": "MIT",
+  "types": "./types/index.d.ts"
+}
