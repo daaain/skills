@@ -5,7 +5,9 @@ import type { Pin, PinAnchor, PinKind } from '../types'
 import {
   autoPinFor,
   boardsToPrune,
+  cellWidth,
   findQuoted,
+  fitTo,
   isBackgroundOrigin,
   parsePinsCommand,
   preview,
@@ -32,12 +34,17 @@ const seq = atom({ plugin: 'pin-board', key: 'seq' } as const, 0)
 // Which session the board belongs to, and its transcript; in state so a hot reload keeps both.
 const session = atom({ plugin: 'pin-board', key: 'session' } as const, null)
 
-const KIND_COLOR: Record<PinKind, string> = {
-  question: 'warning',
-  decision: 'suggestion',
-  fyi: 'subtle',
-  summary: 'inactive',
+// Each wide by default, so no terminal draws one a cell short.
+const KIND_EMOJI: Record<PinKind, string> = {
+  question: '❓',
+  decision: '🔀',
+  fyi: '💡',
+  summary: '📝',
 }
+const EMOJI_CELLS = 2
+// What a band row's buttons take on its right: a gap, `↑ jump` and a gap where it shows, and `✕`.
+const JUMP_CELLS = 7
+const DISMISS_CELLS = 2
 
 // Sent on every request, so it stays one sentence; the wake guidance rides on background prompts only,
 // and how to update a pin is in each call's result.
@@ -223,10 +230,14 @@ const jumpTo = async ($: EngineInterface, pin: Pin): Promise<string | undefined>
   }
 }
 
-// One pin's row: number, time, kind, preview, and its buttons. `isFull` shows the whole text.
-const pinRow = ($: EngineInterface, e: Parameters<EngineInterface['ui']['resolve']>[0], pin: Pin, n: number, open: string | null, isFull: boolean) => {
+type RenderSite = Parameters<EngineInterface['ui']['resolve']>[0]
+
+// One pin's row: number, time, kind and, in the band, a preview cut to the `columns` left, all of
+// it one button that expands the pin; then its own buttons. `isFull` shows the whole text below.
+const pinRow = ($: EngineInterface, e: RenderSite, pin: Pin, n: number, open: string | null, isFull: boolean, columns: number) => {
   const { Box, Button, Markdown, Text } = $.ui.resolve(e)
   const isOpen = isFull || open === pin.id
+  const hasJump = live.isFullscreen && pin.anchor !== undefined
   const toggle = () => update($, expanded, current => (current === pin.id ? null : pin.id))
   const dismiss = () => removePins($, new Set([pin.id]))
   const jump = async () => {
@@ -234,19 +245,28 @@ const pinRow = ($: EngineInterface, e: Parameters<EngineInterface['ui']['resolve
     if (why !== undefined) $.ui.toast(`pin-board: ${why}`)
   }
 
+  const head = `${isFull ? '' : isOpen ? '▾' : '▸'}${n} ${clockTime(pin.at)}`
+  const room = columns - cellWidth(head) - 1 - EMOJI_CELLS - 1 - (hasJump ? JUMP_CELLS : 0) - DISMISS_CELLS
+  const lead = isFull ? (
+    <Box flexShrink={0}>
+      <Text dimColor>{head}</Text>
+      <Text> {KIND_EMOJI[pin.kind]}</Text>
+    </Box>
+  ) : (
+    <Button key={`toggle:${pin.id}`} plain onPress={toggle}>
+      <Text dimColor>{head}</Text>
+      {` ${KIND_EMOJI[pin.kind]} ${fitTo(preview(pin.text), room)}`}
+    </Button>
+  )
+
   return (
     <Box key={`pin:${pin.id}`} flexDirection="column">
-      <Box flexDirection="row" gap={1}>
-        {isFull ? <Text dimColor>{n}</Text> : <Button key={`toggle:${pin.id}`} plain label={`${isOpen ? '▾' : '▸'}${n}`} onPress={toggle} />}
-        <Text dimColor>{clockTime(pin.at)}</Text>
-        <Text color={KIND_COLOR[pin.kind]}>{pin.kind}</Text>
-        <Box flexGrow={1} flexShrink={1}>
-          <Text wrap="truncate-end">{isFull ? '' : preview(pin.text)}</Text>
+      <Box flexDirection="row" justifyContent="space-between" gap={1}>
+        {lead}
+        <Box flexDirection="row" flexShrink={0} gap={1}>
+          {hasJump && <Button key={`jump:${pin.id}`} plain label="↑ jump" onPress={jump} />}
+          <Button key={`dismiss:${pin.id}`} plain label="✕" onPress={dismiss} />
         </Box>
-        {live.isFullscreen && pin.anchor !== undefined && (
-          <Button key={`jump:${pin.id}`} plain label="↑ jump" onPress={jump} />
-        )}
-        <Button key={`dismiss:${pin.id}`} plain label="✕" onPress={dismiss} />
       </Box>
       {isOpen && (
         <Box paddingLeft={2} marginBottom={isFull ? 1 : 0}>
@@ -489,8 +509,9 @@ export const register: Register = (on, options) => {
         <Box flexDirection="row" gap={1}>
           <Text weight="bold">📌 Pinned ({list.length})</Text>
           <Button key="clear-all" plain label="clear all" onPress={() => clearPins($)} />
+          {live.isFullscreen && <Button key="open-pane" plain label="open side pane" onPress={() => openPane($, true)} />}
         </Box>
-        {list.map((pin, i) => pinRow($, e, pin, i + 1, open, false))}
+        {list.map((pin, i) => pinRow($, e, pin, i + 1, open, false, e.props.bodyColumns))}
       </Box>
     )
   })
@@ -505,7 +526,7 @@ export const register: Register = (on, options) => {
           <Text weight="bold">{list.length === 0 ? 'No pins.' : `${list.length} pinned, newest first`}</Text>
           {list.length > 0 && <Button key="clear-all" plain label="clear all" onPress={() => clearPins($)} />}
         </Box>
-        {list.map((pin, i) => pinRow($, e, pin, i + 1, null, true))}
+        {list.map((pin, i) => pinRow($, e, pin, i + 1, null, true, e.props.bodyColumns))}
       </Box>
     )
   })
