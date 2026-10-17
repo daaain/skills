@@ -174,3 +174,70 @@ export const replyWindow = (max: number) => {
     },
   }
 }
+
+// Code points a terminal draws two cells wide (East Asian wide, emoji), and none wide (combining
+// marks, zero-width joiners, variation selectors); close enough to keep a row on one line.
+const WIDE: readonly [number, number][] = [
+  [0x1100, 0x115f],
+  [0x231a, 0x231b],
+  [0x2614, 0x2615],
+  [0x2648, 0x2653],
+  [0x26a1, 0x26a1],
+  [0x26aa, 0x26ab],
+  [0x26bd, 0x26be],
+  [0x26c4, 0x26c5],
+  [0x26d4, 0x26d4],
+  [0x26ea, 0x26ea],
+  [0x26f2, 0x26f5],
+  [0x26fa, 0x26fd],
+  [0x2705, 0x2705],
+  [0x270a, 0x270b],
+  [0x2728, 0x2728],
+  [0x274c, 0x274c],
+  [0x274e, 0x274e],
+  [0x2753, 0x2755],
+  [0x2757, 0x2757],
+  [0x2795, 0x2797],
+  [0x27b0, 0x27b0],
+  [0x27bf, 0x27bf],
+  [0x2b1b, 0x2b1c],
+  [0x2b50, 0x2b50],
+  [0x2b55, 0x2b55],
+  [0x2e80, 0x303e],
+  [0x3041, 0xa4cf],
+  [0xac00, 0xd7a3],
+  [0xf900, 0xfaff],
+  [0xfe30, 0xfe4f],
+  [0xff00, 0xff60],
+  [0xffe0, 0xffe6],
+  [0x1f300, 0x1f64f],
+  [0x1f680, 0x1f6ff],
+  [0x1f900, 0x1f9ff],
+  [0x20000, 0x3fffd],
+]
+const ZERO_WIDTH = /[̀-ͯ​-‏⃐-⃿︀-️]/
+
+const charWidth = (char: string): number => {
+  if (ZERO_WIDTH.test(char)) return 0
+  const code = char.codePointAt(0)!
+  return WIDE.some(([from, to]) => code >= from && code <= to) ? 2 : 1
+}
+
+export const cellWidth = (text: string): number => Array.from(text).reduce((sum, char) => sum + charWidth(char), 0)
+
+// The text cut to `width` cells, an ellipsis ending what was cut.
+export const fitTo = (text: string, width: number): string => {
+  if (cellWidth(text) <= width) return text
+  if (width <= 0) return ''
+
+  let kept = ''
+  let used = 0
+  for (const char of text) {
+    const next = charWidth(char)
+    if (used + next > width - 1) break
+    kept += char
+    used += next
+  }
+
+  return `${kept}…`
+}

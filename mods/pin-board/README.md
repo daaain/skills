@@ -10,9 +10,11 @@ On the normal screen, pins show in a band above the prompt instead:
 
 ```
 📌 Pinned (2) clear all
-▸1 10:05 summary   CI is green on all three branches; two reviewers approved…  ↑ jump ✕
-▸2 09:41 question  PR #42 got a review: rename the helper or keep it?          ↑ jump ✕
+▸1 10:05 📝 CI is green on all three branches; two reviewers approved…  ✕
+▸2 09:41 ❓ PR #42 got a review: rename the helper or keep it?          ✕
 ```
+
+Each pin's kind shows as an emoji: ❓ question, 🔀 decision, 💡 fyi, 📝 summary.
 
 ## How it decides what to pin
 
@@ -48,8 +50,8 @@ Each of Claude's pins gets a stable id (`p1`, `p2`, …). The tool's reply tells
 
 ## Where pins show
 
-- **Fullscreen:** a new pin opens a **Pins** pane docked beside the transcript, running from the top of the screen to the bottom, with every pin in full, newest first. The band above the prompt shrinks to one line. If you close the pane, it stays closed until you run `/pins`. The mod opens the pane itself only on a terminal at least 144 columns wide; `/pins` opens it at any width.
-- **Elsewhere:** pins show in the band above the prompt, newest first, one line each. ▸ expands a pin to its full text, rendered as Markdown.
+- **Fullscreen:** a new pin opens a **Pins** pane docked beside the transcript, running from the top of the screen to the bottom, with every pin in full, newest first. The band above the prompt shrinks to one line. If you close the pane, it stays closed until you press **open side pane** in the band or run `/pins`. The mod opens the pane itself only on a terminal at least 144 columns wide; `/pins` opens it at any width.
+- **Elsewhere:** pins show in the band above the prompt, newest first, one line each, cut to fit the width. Pressing a row expands that pin to its full text, rendered as Markdown.
 
 Pins never disappear on their own. See [Resuming a session](#resuming-a-session) for what happens to them across sessions.
 
@@ -67,7 +69,7 @@ Pins are numbered newest first, and `/pins` runs at once, even while Claude is w
 
 The buttons are also reachable from the keyboard: press `ctrl+x tab` to put focus on the band or pane, then Tab between buttons, Enter to press one, and Esc to go back to the prompt.
 
-With the mouse, every button (▸, ↑ jump, ✕, clear all) is clickable in the fullscreen terminal, the desktop app and VS Code; the wheel scrolls the band and pane. On the terminal's normal screen Claude Code doesn't receive clicks, so use the keys or `/pins` there.
+With the mouse, every button (a pin's whole row, ↑ jump, ✕, clear all, open side pane) is clickable in the fullscreen terminal, the desktop app and VS Code; the wheel scrolls the band and pane. On the terminal's normal screen Claude Code doesn't receive clicks, so use the keys or `/pins` there.
 
 ## Jumping back to the transcript
 
