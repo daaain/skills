@@ -211,7 +211,9 @@ test('a background wake that asks a question is pinned above the prompt', { plug
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...BAND, surface })
-    const text = (await ui.findAll({ type: 'Text' })).map(one => one.text).join('\n')
+    const text = [...(await ui.findAll({ type: 'Text' })), ...(await ui.findAll({ type: 'Button' }))]
+      .map(one => one.text)
+      .join('\n')
     await ui.unmount()
     expect(text).toContain('Pinned (1)')
     expect(text).toContain('PR #42 got a review: rename the helper?')
@@ -296,6 +298,66 @@ test('expanding a pin shows its full text, dismissing removes it', async ($, on)
 
   await ui.press({ key: 'clear-all' })
   expect(await ui.find({ key: 'clear-all' })).toBeUndefined()
+})
+
+// The band mounted, and each row's button that expands its pin.
+const bandRows = async ($: Engine) => {
+  const ui = await $.ui.mount(BAND)
+  return { ui, rows: (await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('toggle:')) }
+}
+
+test('a whole band row is one button that expands its pin', async ($, on) => {
+  await setup($, on)
+  await pin($, 'u1', 'Rename the helper?\n\nIt clashes with the new module.', 'question')
+
+  const { ui, rows: [row] } = await bandRows($)
+  expect(row?.text).toContain('Rename the helper?')
+  expect(row?.text).toContain('❓')
+
+  await ui.press({ key: row!.key! })
+  expect((await ui.find({ type: 'Markdown' }))?.text).toContain('It clashes with the new module.')
+})
+
+test('each kind shows as an emoji rather than a word', { plugins: [PR_WATCH] }, async ($, on) => {
+  await setup($, on)
+  await wakeTurn($, 't1', `CI is green on all three branches. ${'All checks passed. '.repeat(20)}`)
+  await pin($, 'u1', 'Rename the helper?', 'question')
+  await pin($, 'u2', 'Went with the v2 endpoint.', 'decision')
+  await pin($, 'u3', 'Deploy finished.')
+
+  const band = await textOf($, BAND)
+  for (const emoji of ['📝', '❓', '🔀', '💡']) expect(band).toContain(emoji)
+  for (const word of ['summary', 'question', 'decision', 'fyi']) expect(band).not.toContain(word)
+})
+
+test('a long preview is cut to fit the band, so its row never wraps', async ($, on) => {
+  await setup($, on)
+  await pin($, 'u1', `Started with ${'a very long line of findings '.repeat(10)}`)
+
+  const { rows: [row] } = await bandRows($)
+  expect(row?.text).toMatch(/…$/)
+  // The row's button, a gap and the ✕ fit the band's 80 columns.
+  expect(row!.text!.length + 2).toBeLessThanOrEqual(BAND.props.bodyColumns)
+})
+
+test('in fullscreen a pane the person closed can be reopened from the band', async ($, on) => {
+  const seen = await setup($, on)
+  await textOf($, BAND, FULLSCREEN)
+  await pin($, 'u1', 'Rebase onto main?')
+  seen.isPaneUp = false
+
+  const ui = await $.ui.mount({ ...BAND, viewport: FULLSCREEN })
+  await ui.press({ key: 'open-pane' })
+
+  expect(seen.opened).toEqual([PANE, PANE])
+})
+
+test('outside fullscreen the band offers no side pane', async ($, on) => {
+  await setup($, on)
+  await pin($, 'u1', 'Rebase onto main?')
+
+  const ui = await $.ui.mount(BAND)
+  expect(await ui.find({ key: 'open-pane' })).toBeUndefined()
 })
 
 test('in fullscreen a new pin docks the pane and the band shrinks to one line', async ($, on) => {

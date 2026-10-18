@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { asksQuestion, autoPinFor, boardsToPrune, findQuoted, isBackgroundOrigin, parsePinsCommand, preview, replyWindow, repliesFromTranscript, textOf } from '../hooks/pins'
+import { asksQuestion, autoPinFor, boardsToPrune, cellWidth, findQuoted, fitTo, isBackgroundOrigin, parsePinsCommand, preview, replyWindow, repliesFromTranscript, textOf } from '../hooks/pins'
 
 describe('isBackgroundOrigin', () => {
   test('the person typing, on any client, is not a background wake', () => {
@@ -169,5 +169,32 @@ describe('replyWindow', () => {
       { uuid: 'a2', text: 'two' },
       { uuid: 'a3', text: 'three' },
     ])
+  })
+})
+
+describe('cellWidth', () => {
+  test('counts wide characters and emoji as two cells, joiners and selectors as none', () => {
+    expect(cellWidth('abc')).toBe(3)
+    expect(cellWidth('❓📝')).toBe(4)
+    expect(cellWidth('日本')).toBe(4)
+    expect(cellWidth('e\u0301\uFE0F')).toBe(1)
+  })
+})
+
+describe('fitTo', () => {
+  test('leaves text that fits as it is', () => {
+    expect(fitTo('Merge it?', 9)).toBe('Merge it?')
+  })
+
+  test('cuts text that does not fit, ending it with an ellipsis within the width', () => {
+    expect(fitTo('Rebase onto main?', 10)).toBe('Rebase on…')
+  })
+
+  test('never splits a wide character across the edge', () => {
+    expect(fitTo('日本語です', 6)).toBe('日本…')
+  })
+
+  test('has nothing to show in no room', () => {
+    expect(fitTo('Anything', 0)).toBe('')
   })
 })
